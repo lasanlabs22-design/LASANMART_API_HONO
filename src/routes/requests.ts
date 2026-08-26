@@ -1,0 +1,237 @@
+import { Hono } from 'hono';
+import { pool } from '../db/pool.js';
+import { sendRequestNotification } from '../email/notify.js';
+
+export const requestsRoute = new Hono();
+
+const VALID_TYPES = ['service', 'custom', 'plan', 'influencer'];
+
+/**
+ * Phone is our identity key — the same person must always produce the
+ * same string, so "+91 98765 43210" and "9876543210" both become "9876543210".
+ */
+function normalisePhone(input: unknown): string {
+  const digits = String(input ?? '').replace(/\D/g, '');
+  return digits.length > 10 ? digits.slice(-10) : digits;
+}
+
+function isValidEmail(value: string): boolean {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+}
+
+/**
+ * POST /requests
+ * Body shape:
+ * {
+ *   type: "service" | "custom" | "plan" | "influencer",
+ *   name: string,
+ *   phone: string,
+ *   email?: string,
+ *   companyName?: string,
+ *   companyDescription?: string,
+ *   sector?: string,
+ *   city?: string,
+ *   title?: string,
+ *   description?: string,
+ *   details?: object   // type-specific extra data
+ * }
+ */
+requestsRoute.post('/', async (c) => {
+  let body: any;
+
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: 'Request body must be valid JSON' }, 400);
+  }
+
+  const { type } = body;
+
+  /* ---------- Validation ---------- */
+
+  if (!type || !body.name || !body.phone) {
+    return c.json({ error: 'Missing required fields: type, name, phone' }, 400);
+  }
+
+  if (!VALID_TYPES.includes(type)) {
+    return c.json({ error: 'Invalid type' }, 400);
+  }
+
+  const name = String(body.name).trim();
+  if (name.length < 2) {
+    return c.json({ error: 'Name is too short' }, 400);
+  }
+
+  const phone = normalisePhone(body.phone);
+  if (phone.length !== 10) {
+    return c.json({ error: 'Phone must be a valid 10-digit number' }, 400);
+  }
+
+  const email = body.email ? String(body.email).trim().toLowerCase() : null;
+  if (email && !isValidEmail(email)) {
+    return c.json({ error: 'Email is not valid' }, 400);
+  }
+
+  /* ---------- Save ---------- */
+
+  const client = await pool.connect();
+  let committed = false;
+
+  try {
+    await client.query('BEGIN');
+
+    // Step 1: find or create the contact (person), matched by phone
+    const existingContact = await client.query(
+      'SELECT id FROM contacts WHERE phone = $1',
+      [phone]
+    );
+
+    let contactId: string;
+
+    if (existingContact.rows.length > 0) {
+      contactId = existingContact.rows[0].id;
+
+      // COALESCE keeps existing values when this submission omits them —
+      // a partial form must never wipe details we already have
+      await client.query(
+        `UPDATE contacts SET
+          name = COALESCE($1, name),
+          email = COALESCE($2, email),
+          company_name = COALESCE($3, company_name),
+          company_description = COALESCE($4, company_description),
+          sector = COALESCE($5, sector),
+          city = COALESCE($6, city),
+          updated_at = now()
+         WHERE id = $7`,
+        [
+          name,
+          email,
+          body.companyName || null,
+          body.companyDescription || null,
+          body.sector || null,
+          body.city || null,
+          contactId,
+        ]
+      );
+    } else {
+      const newContact = await client.query(
+        `INSERT INTO contacts
+          (name, phone, email, company_name, company_description, sector, city)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
+         RETURNING id`,
+        [
+          name,
+          phone,
+          email,
+          body.companyName || null,
+          body.companyDescription || null,
+          body.sector || null,
+          body.city || null,
+        ]
+      );
+      contactId = newContact.rows[0].id;
+    }
+
+    // Step 2: create the request itself, linked to that contact
+    const newRequest = await client.query(
+      `INSERT INTO requests
+        (contact_id, type, title, description, details, status, email_sent)
+       VALUES ($1, $2, $3, $4, $5, 'new', false)
+       RETURNING id, created_at`,
+      [
+        contactId,
+        type,
+        body.title || null,
+        body.description || null,
+        body.details ? JSON.stringify(body.details) : null,
+      ]
+    );
+
+    await client.query('COMMIT');
+    committed = true;
+
+    const requestId = newRequest.rows[0].id;
+
+    /* ---------- Notify ---------- */
+
+    // Sent AFTER commit — if email fails, the lead is already safe
+    let emailSent = false;
+    try {
+      await sendRequestNotification({
+        requestId,
+        type,
+        name,
+        phone,
+        email,
+        companyName: body.companyName,
+        sector: body.sector,
+        city: body.city,
+        title: body.title,
+        description: body.description,
+        details: body.details,
+      });
+      emailSent = true;
+
+      await pool.query('UPDATE requests SET email_sent = true WHERE id = $1', [
+        requestId,
+      ]);
+    } catch (emailErr) {
+      console.error(
+        'Email notification failed (request still saved):',
+        emailErr
+      );
+      // Deliberately not failing the request — the lead is in the database
+    }
+
+    return c.json(
+      {
+        success: true,
+        requestId,
+        contactId,
+        emailSent,
+        createdAt: newRequest.rows[0].created_at,
+      },
+      201
+    );
+  } catch (err) {
+    // Only roll back if the transaction is still open
+    if (!committed) {
+      await client.query('ROLLBACK').catch(() => {});
+    }
+    console.error('Failed to create request:', err);
+    return c.json({ error: 'Something went wrong. Please try again.' }, 500);
+  } finally {
+    client.release();
+  }
+});
+
+/**
+ * GET /requests?phone=9876543210
+ * Returns everything this person has submitted, newest first.
+ * Powers the My Requests tab.
+ */
+requestsRoute.get('/', async (c) => {
+  const phone = normalisePhone(c.req.query('phone'));
+
+  if (phone.length !== 10) {
+    return c.json({ error: 'A valid 10-digit phone is required' }, 400);
+  }
+
+  try {
+    const result = await pool.query(
+      `SELECT r.id, r.type, r.title, r.description, r.details,
+              r.status, r.created_at
+         FROM requests r
+         JOIN contacts c ON c.id = r.contact_id
+        WHERE c.phone = $1
+        ORDER BY r.created_at DESC
+        LIMIT 100`,
+      [phone]
+    );
+
+    return c.json({ requests: result.rows });
+  } catch (err) {
+    console.error('Failed to fetch requests:', err);
+    return c.json({ error: 'Something went wrong. Please try again.' }, 500);
+  }
+});
