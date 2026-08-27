@@ -40,3 +40,18 @@ ALTER TABLE requests ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DE
 CREATE INDEX IF NOT EXISTS idx_requests_created_at ON requests(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_requests_status ON requests(status);
 CREATE INDEX IF NOT EXISTS idx_requests_assigned_to ON requests(assigned_to);
+
+-- Notifications shown to the customer inside the app
+CREATE TABLE IF NOT EXISTS notifications (
+  id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+  contact_id TEXT NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+  request_id TEXT REFERENCES requests(id) ON DELETE CASCADE,
+  type TEXT NOT NULL DEFAULT 'status',
+  title TEXT NOT NULL,
+  body TEXT NOT NULL,
+  read_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_notifications_contact ON notifications(contact_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_notifications_unread ON notifications(contact_id) WHERE read_at IS NULL;
