@@ -168,6 +168,7 @@ requestsRoute.post('/', async (c) => {
         city: body.city,
         title: body.title,
         description: body.description,
+        descriptionLabel: body.descriptionLabel,
         details: body.details,
       });
       emailSent = true;
