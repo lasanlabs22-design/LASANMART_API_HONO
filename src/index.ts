@@ -3,6 +3,7 @@ import { serve } from '@hono/node-server';
 import { cors } from 'hono/cors';
 import { config } from './config.js';
 import { requestsRoute } from './routes/requests.js';
+import { notificationsRoute } from './routes/notifications.js';
 import { adminRoute } from './routes/admin.js';
 
 const app = new Hono();
@@ -23,7 +24,11 @@ app.get('/', (c) => {
   });
 });
 
+/* ---------- Customer-facing (used by the mobile app) ---------- */
 app.route('/requests', requestsRoute);
+app.route('/notifications', notificationsRoute);
+
+/* ---------- Team-facing (used by the admin console) ---------- */
 app.route('/admin', adminRoute);
 
 serve({ fetch: app.fetch, port: config.port }, (info) => {

@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { pool } from '../db/pool.js';
 import { sendRequestNotification } from '../email/notify.js';
+import { notifyFirstRequest } from '../lib/notifications.js';
 
 export const requestsRoute = new Hono();
 
@@ -33,7 +34,8 @@ function isValidEmail(value: string): boolean {
  *   city?: string,
  *   title?: string,
  *   description?: string,
- *   details?: object   // type-specific extra data
+ *   descriptionLabel?: string,   // heading shown above the description
+ *   details?: object             // type-specific extra data
  * }
  */
 requestsRoute.post('/', async (c) => {
@@ -87,6 +89,7 @@ requestsRoute.post('/', async (c) => {
     );
 
     let contactId: string;
+    let isNewContact = false;
 
     if (existingContact.rows.length > 0) {
       contactId = existingContact.rows[0].id;
@@ -114,6 +117,8 @@ requestsRoute.post('/', async (c) => {
         ]
       );
     } else {
+      isNewContact = true;
+
       const newContact = await client.query(
         `INSERT INTO contacts
           (name, phone, email, company_name, company_description, sector, city)
@@ -153,6 +158,12 @@ requestsRoute.post('/', async (c) => {
     const requestId = newRequest.rows[0].id;
 
     /* ---------- Notify ---------- */
+
+    // First time we've seen this person? Welcome them in the app,
+    // so the notifications screen isn't empty when they open it
+    if (isNewContact) {
+      await notifyFirstRequest(contactId, requestId);
+    }
 
     // Sent AFTER commit — if email fails, the lead is already safe
     let emailSent = false;

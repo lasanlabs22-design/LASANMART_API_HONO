@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { pool } from '../db/pool.js';
 import { adminAuth } from '../middleware/adminAuth.js';
+import { notifyStatusChange } from '../lib/notifications.js';
 
 export const adminRoute = new Hono();
 
@@ -200,6 +201,7 @@ adminRoute.get('/requests/:id', async (c) => {
 /**
  * PATCH /admin/requests/:id
  * Update status, assignee, internal note — any combination.
+ * A genuine status change also notifies the customer in the app.
  */
 adminRoute.patch('/requests/:id', async (c) => {
   const id = c.req.param('id');
@@ -243,6 +245,19 @@ adminRoute.patch('/requests/:id', async (c) => {
   params.push(id);
 
   try {
+    // Read the current state first — we only notify the customer
+    // when the status genuinely moves, not on every save
+    const before = await pool.query(
+      `SELECT status, title, contact_id FROM requests WHERE id = $1`,
+      [id]
+    );
+
+    if (before.rows.length === 0) {
+      return c.json({ error: 'Request not found' }, 404);
+    }
+
+    const previous = before.rows[0];
+
     const result = await pool.query(
       `UPDATE requests
           SET ${updates.join(', ')}
@@ -251,11 +266,19 @@ adminRoute.patch('/requests/:id', async (c) => {
       params
     );
 
-    if (result.rows.length === 0) {
-      return c.json({ error: 'Request not found' }, 404);
+    const updated = result.rows[0];
+
+    if (body.status !== undefined && body.status !== previous.status) {
+      // Never throws — a failed notification must not fail the update
+      await notifyStatusChange(
+        previous.contact_id,
+        id,
+        body.status,
+        previous.title
+      );
     }
 
-    return c.json({ success: true, request: result.rows[0] });
+    return c.json({ success: true, request: updated });
   } catch (err) {
     console.error('Failed to update request:', err);
     return c.json({ error: 'Could not update request' }, 500);
