@@ -25,7 +25,7 @@ export const config = {
     from: process.env.MAIL_FROM || 'onboarding@resend.dev',
     to: required('MAIL_TO'),
   },
-
+    adminPassword: required('ADMIN_PASSWORD'),
     databaseUrl: (() => {
     const url = process.env.DATABASE_URL || '';
     if (url.includes('railway.internal')) {
