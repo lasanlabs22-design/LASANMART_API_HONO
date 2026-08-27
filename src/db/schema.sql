@@ -25,3 +25,18 @@ CREATE TABLE IF NOT EXISTS requests (
 
 CREATE INDEX IF NOT EXISTS idx_requests_contact_id ON requests(contact_id);
 CREATE INDEX IF NOT EXISTS idx_requests_type ON requests(type);
+
+-- Assignment: who on the team is handling this request
+ALTER TABLE requests ADD COLUMN IF NOT EXISTS assigned_to TEXT;
+ALTER TABLE requests ADD COLUMN IF NOT EXISTS assigned_at TIMESTAMPTZ;
+
+-- Internal notes the team adds while working a request
+ALTER TABLE requests ADD COLUMN IF NOT EXISTS internal_note TEXT;
+
+-- Track when the team last touched it
+ALTER TABLE requests ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now();
+
+-- Useful indexes for the dashboard's most common queries
+CREATE INDEX IF NOT EXISTS idx_requests_created_at ON requests(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_requests_status ON requests(status);
+CREATE INDEX IF NOT EXISTS idx_requests_assigned_to ON requests(assigned_to);
