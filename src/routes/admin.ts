@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { pool } from '../db/pool.js';
 import { adminAuth } from '../middleware/adminAuth.js';
 import { notifyStatusChange } from '../lib/notifications.js';
+import { deleteVideo } from '../lib/cloudinary.js';
 
 export const adminRoute = new Hono();
 
@@ -338,5 +339,182 @@ adminRoute.get('/contacts', async (c) => {
   } catch (err) {
     console.error('Failed to load contacts:', err);
     return c.json({ error: 'Could not load contacts' }, 500);
+  }
+});
+
+/* ---------------- Lasan Vibes ---------------- */
+
+/**
+ * GET /admin/reels
+ * Everything, including hidden ones, for the console.
+ */
+adminRoute.get('/reels', async (c) => {
+  try {
+    const result = await pool.query(
+      `SELECT r.id, r.video_url, r.thumbnail_url, r.public_id,
+              r.caption, r.username, r.source, r.status,
+              r.duration, r.view_count, r.sort_order, r.created_at,
+              c.name AS contact_name, c.phone AS contact_phone
+         FROM reels r
+         LEFT JOIN contacts c ON c.id = r.contact_id
+        ORDER BY r.sort_order DESC, r.created_at DESC
+        LIMIT 200`
+    );
+
+    const counts = await pool.query(`
+      SELECT
+        COUNT(*)::int AS total,
+        COUNT(*) FILTER (WHERE status = 'live')::int AS live,
+        COUNT(*) FILTER (WHERE status = 'hidden')::int AS hidden,
+        COUNT(*) FILTER (WHERE source = 'user')::int AS from_users,
+        COALESCE(SUM(view_count), 0)::int AS total_views
+      FROM reels
+    `);
+
+    return c.json({ reels: result.rows, stats: counts.rows[0] });
+  } catch (err) {
+    console.error('Failed to load reels:', err);
+    return c.json({ error: 'Could not load reels' }, 500);
+  }
+});
+
+/**
+ * POST /admin/reels
+ * The team posting a reel from the console.
+ */
+adminRoute.post('/reels', async (c) => {
+  let body: any;
+
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: 'Body must be valid JSON' }, 400);
+  }
+
+  const videoUrl = String(body.videoUrl || '').trim();
+
+  if (!videoUrl.startsWith('http')) {
+    return c.json({ error: 'A video is required' }, 400);
+  }
+
+  const username = String(body.username || '@lasanmart').trim();
+
+  try {
+    const result = await pool.query(
+      `INSERT INTO reels
+        (video_url, thumbnail_url, public_id, duration,
+         caption, username, source, status)
+       VALUES ($1, $2, $3, $4, $5, $6, 'team', 'live')
+       RETURNING id, video_url, thumbnail_url, caption, username, created_at`,
+      [
+        videoUrl,
+        body.thumbnailUrl || null,
+        body.publicId || null,
+        body.duration || null,
+        body.caption ? String(body.caption).trim().slice(0, 300) : null,
+        username.startsWith('@') ? username : `@${username}`,
+      ]
+    );
+
+    return c.json({ success: true, reel: result.rows[0] }, 201);
+  } catch (err) {
+    console.error('Failed to create reel:', err);
+    return c.json({ error: 'Could not save the reel' }, 500);
+  }
+});
+
+/**
+ * PATCH /admin/reels/:id
+ * Edit the caption, hide it, or pin it to the top.
+ */
+adminRoute.patch('/reels/:id', async (c) => {
+  const id = c.req.param('id');
+
+  let body: any;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: 'Body must be valid JSON' }, 400);
+  }
+
+  const updates: string[] = [];
+  const params: any[] = [];
+
+  if (body.caption !== undefined) {
+    params.push(String(body.caption).trim().slice(0, 300) || null);
+    updates.push(`caption = $${params.length}`);
+  }
+
+  if (body.status !== undefined) {
+    if (!['live', 'pending', 'hidden'].includes(body.status)) {
+      return c.json({ error: 'Invalid status' }, 400);
+    }
+    params.push(body.status);
+    updates.push(`status = $${params.length}`);
+  }
+
+  if (body.sortOrder !== undefined) {
+    params.push(Number(body.sortOrder) || 0);
+    updates.push(`sort_order = $${params.length}`);
+  }
+
+  if (updates.length === 0) {
+    return c.json({ error: 'Nothing to update' }, 400);
+  }
+
+  updates.push('updated_at = now()');
+  params.push(id);
+
+  try {
+    const result = await pool.query(
+      `UPDATE reels SET ${updates.join(', ')}
+        WHERE id = $${params.length}
+        RETURNING id, caption, status, sort_order`,
+      params
+    );
+
+    if (result.rows.length === 0) {
+      return c.json({ error: 'Reel not found' }, 404);
+    }
+
+    return c.json({ success: true, reel: result.rows[0] });
+  } catch (err) {
+    console.error('Failed to update reel:', err);
+    return c.json({ error: 'Could not update the reel' }, 500);
+  }
+});
+
+/**
+ * DELETE /admin/reels/:id
+ * Removes the row and the file from Cloudinary.
+ */
+adminRoute.delete('/reels/:id', async (c) => {
+  const id = c.req.param('id');
+
+  try {
+    const existing = await pool.query(
+      'SELECT public_id FROM reels WHERE id = $1',
+      [id]
+    );
+
+    if (existing.rows.length === 0) {
+      return c.json({ error: 'Reel not found' }, 404);
+    }
+
+    const publicId = existing.rows[0].public_id;
+
+    await pool.query('DELETE FROM reels WHERE id = $1', [id]);
+
+    // Free the storage. If this fails the row is already gone,
+    // which is the right way round — a stray file is better than
+    // a reel that won't disappear from the app.
+    if (publicId) {
+      await deleteVideo(publicId);
+    }
+
+    return c.json({ success: true });
+  } catch (err) {
+    console.error('Failed to delete reel:', err);
+    return c.json({ error: 'Could not delete the reel' }, 500);
   }
 });
