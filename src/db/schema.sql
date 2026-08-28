@@ -55,3 +55,36 @@ CREATE TABLE IF NOT EXISTS notifications (
 
 CREATE INDEX IF NOT EXISTS idx_notifications_contact ON notifications(contact_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_notifications_unread ON notifications(contact_id) WHERE read_at IS NULL;
+
+-- Lasan Vibes: short videos shown in the app
+CREATE TABLE IF NOT EXISTS reels (
+  id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+
+  -- Cloudinary
+  video_url TEXT NOT NULL,
+  thumbnail_url TEXT,
+  public_id TEXT,              -- Cloudinary's own id, needed to delete the file
+  duration NUMERIC,            -- seconds
+
+  -- Content
+  caption TEXT,
+  username TEXT NOT NULL,
+
+  -- Who posted it: 'team' from the console, 'user' from the app
+  source TEXT NOT NULL DEFAULT 'team' CHECK (source IN ('team', 'user')),
+  contact_id TEXT REFERENCES contacts(id) ON DELETE SET NULL,
+
+  -- Reserved for moderation later; everything is live for now
+  status TEXT NOT NULL DEFAULT 'live'
+    CHECK (status IN ('live', 'pending', 'hidden')),
+
+  view_count INT NOT NULL DEFAULT 0,
+  sort_order INT NOT NULL DEFAULT 0,
+
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_reels_feed
+  ON reels(status, sort_order DESC, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_reels_contact ON reels(contact_id);
