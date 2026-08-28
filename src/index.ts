@@ -9,12 +9,22 @@ import { adminRoute } from './routes/admin.js';
 
 const app = new Hono();
 
-// The dashboard runs on a different domain, so the browser needs
-// permission to call this API. The mobile app isn't affected by CORS.
+/**
+ * The console runs on a different domain, so the browser needs explicit
+ * permission to call this API. Only these origins are allowed —
+ * the admin password is the real protection, but there's no reason
+ * to let any website on the internet try.
+ *
+ * The mobile app isn't affected by CORS at all; that's a browser rule.
+ */
 app.use(
   '/admin/*',
   cors({
-    origin: '*',
+    origin: [
+      'https://lsm-admin-console.vercel.app', // ← replace with your Vercel URL
+      'http://localhost:3001', // local development
+      'http://localhost:3000',
+    ],
     allowHeaders: ['Content-Type', 'x-admin-key'],
     allowMethods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
   })
