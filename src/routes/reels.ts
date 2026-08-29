@@ -35,6 +35,43 @@ reelsRoute.get('/', async (c) => {
 });
 
 /**
+ * GET /reels/mine?phone=9876543210
+ * Everything this person has posted, including anything the team
+ * has hidden — so they can see it's still there.
+ */
+reelsRoute.get('/mine', async (c) => {
+  const phone = normalisePhone(c.req.query('phone'));
+
+  if (phone.length !== 10) {
+    return c.json({ error: 'A valid 10-digit phone is required' }, 400);
+  }
+
+  try {
+    const result = await pool.query(
+      `SELECT r.id, r.video_url, r.thumbnail_url, r.caption, r.username,
+              r.source, r.status, r.duration, r.view_count, r.created_at
+         FROM reels r
+         JOIN contacts c ON c.id = r.contact_id
+        WHERE c.phone = $1
+        ORDER BY r.created_at DESC
+        LIMIT 100`,
+      [phone]
+    );
+
+    const views = result.rows.reduce((sum, r) => sum + (r.view_count || 0), 0);
+
+    return c.json({
+      reels: result.rows,
+      total: result.rows.length,
+      totalViews: views,
+    });
+  } catch (err) {
+    console.error('Failed to load your reels:', err);
+    return c.json({ error: 'Could not load your reels' }, 500);
+  }
+});
+
+/**
  * POST /reels
  * A user posting from the app. The video is already on Cloudinary —
  * the app uploads there directly and sends us the URLs.
