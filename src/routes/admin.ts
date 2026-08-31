@@ -319,6 +319,7 @@ adminRoute.get('/contacts', async (c) => {
       `SELECT
           c.id, c.name, c.phone, c.email, c.company_name,
           c.sector, c.city, c.created_at,
+          (c.push_token IS NOT NULL) AS push_enabled,
           COUNT(r.id)::int AS request_count,
           MAX(r.created_at) AS last_request_at
         FROM contacts c
