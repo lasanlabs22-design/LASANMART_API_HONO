@@ -115,3 +115,56 @@ notificationsRoute.post('/read', async (c) => {
     return c.json({ error: 'Could not update notifications' }, 500);
   }
 });
+
+/**
+ * POST /notifications/token
+ * The app registers its device here so we can push to it.
+ * Body: { phone, token }
+ */
+notificationsRoute.post('/token', async (c) => {
+  let body: any;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: 'Body must be valid JSON' }, 400);
+  }
+
+  const phone = normalisePhone(body.phone);
+  const token = String(body.token || '').trim();
+
+  if (phone.length !== 10) {
+    return c.json({ error: 'A valid 10-digit phone is required' }, 400);
+  }
+
+  if (!token.startsWith('ExponentPushToken')) {
+    return c.json({ error: 'Invalid push token' }, 400);
+  }
+
+  try {
+    // Clear this token from anyone else first — phones get handed on,
+    // and two contacts sharing a token means notifications go astray
+    await pool.query(
+      'UPDATE contacts SET push_token = NULL WHERE push_token = $1',
+      [token]
+    );
+
+    const result = await pool.query(
+      `UPDATE contacts
+          SET push_token = $1, push_updated_at = now()
+        WHERE phone = $2
+        RETURNING id`,
+      [token, phone]
+    );
+
+    if (result.rows.length === 0) {
+      // No contact yet — they haven't submitted anything.
+      // Not an error; the app will try again after their first request.
+      return c.json({ success: false, reason: 'no_contact' });
+    }
+
+    return c.json({ success: true });
+  } catch (err) {
+    console.error('Failed to save push token:', err);
+    return c.json({ error: 'Could not register for notifications' }, 500);
+  }
+});

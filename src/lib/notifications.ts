@@ -1,5 +1,6 @@
 import type { PoolClient } from 'pg';
 import { pool } from '../db/pool.js';
+import { pushToContact } from './push.js';
 
 /** Customer-facing wording for each status */
 const STATUS_MESSAGES: Record<string, { title: string; body: string }> = {
@@ -70,11 +71,22 @@ export async function notifyStatusChange(
 
   const subject = requestTitle ? `"${requestTitle}"` : 'your request';
 
+  const body = message.body
+    .replace('your request', subject)
+    .replace('This request', subject);
+
   await createNotification(contactId, {
     requestId,
     type: 'status',
     title: message.title,
-    body: `${message.body.replace('your request', subject).replace('This request', subject)}`,
+    body,
+  });
+
+  // Buzz their phone — the in-app notification is already saved,
+  // so a failure here just means they see it next time they open the app
+  await pushToContact(contactId, message.title, body, {
+    type: 'status',
+    requestId,
   });
 }
 

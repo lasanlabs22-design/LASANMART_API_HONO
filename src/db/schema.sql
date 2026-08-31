@@ -88,3 +88,10 @@ CREATE TABLE IF NOT EXISTS reels (
 CREATE INDEX IF NOT EXISTS idx_reels_feed
   ON reels(status, sort_order DESC, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_reels_contact ON reels(contact_id);
+
+-- Push notification tokens, one per device
+ALTER TABLE contacts ADD COLUMN IF NOT EXISTS push_token TEXT;
+ALTER TABLE contacts ADD COLUMN IF NOT EXISTS push_updated_at TIMESTAMPTZ;
+
+CREATE INDEX IF NOT EXISTS idx_contacts_push ON contacts(push_token)
+  WHERE push_token IS NOT NULL;
