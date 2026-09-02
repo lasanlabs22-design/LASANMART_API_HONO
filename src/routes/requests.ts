@@ -2,19 +2,11 @@ import { Hono } from 'hono';
 import { pool } from '../db/pool.js';
 import { sendRequestNotification } from '../email/notify.js';
 import { notifyFirstRequest } from '../lib/notifications.js';
+import { requirePhone } from '../middleware/requirePhone.js';
 
-export const requestsRoute = new Hono();
+export const requestsRoute = new Hono<{ Variables: { phone: string } }>();
 
 const VALID_TYPES = ['service', 'custom', 'plan', 'influencer'];
-
-/**
- * Phone is our identity key — the same person must always produce the
- * same string, so "+91 98765 43210" and "9876543210" both become "9876543210".
- */
-function normalisePhone(input: unknown): string {
-  const digits = String(input ?? '').replace(/\D/g, '');
-  return digits.length > 10 ? digits.slice(-10) : digits;
-}
 
 function isValidEmail(value: string): boolean {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
@@ -22,11 +14,14 @@ function isValidEmail(value: string): boolean {
 
 /**
  * POST /requests
+ * Requires a verified phone (via requirePhone) — the number comes from
+ * the Firebase token, never from the request body, so nobody can post
+ * a request under someone else's number.
+ *
  * Body shape:
  * {
  *   type: "service" | "custom" | "plan" | "influencer",
  *   name: string,
- *   phone: string,
  *   email?: string,
  *   companyName?: string,
  *   companyDescription?: string,
@@ -38,7 +33,10 @@ function isValidEmail(value: string): boolean {
  *   details?: object             // type-specific extra data
  * }
  */
-requestsRoute.post('/', async (c) => {
+requestsRoute.post('/', requirePhone, async (c) => {
+  // The number is verified, so we ignore whatever the body claims
+  const phone = c.get('phone');
+
   let body: any;
 
   try {
@@ -51,8 +49,8 @@ requestsRoute.post('/', async (c) => {
 
   /* ---------- Validation ---------- */
 
-  if (!type || !body.name || !body.phone) {
-    return c.json({ error: 'Missing required fields: type, name, phone' }, 400);
+  if (!type || !body.name) {
+    return c.json({ error: 'Missing required fields: type, name' }, 400);
   }
 
   if (!VALID_TYPES.includes(type)) {
@@ -62,11 +60,6 @@ requestsRoute.post('/', async (c) => {
   const name = String(body.name).trim();
   if (name.length < 2) {
     return c.json({ error: 'Name is too short' }, 400);
-  }
-
-  const phone = normalisePhone(body.phone);
-  if (phone.length !== 10) {
-    return c.json({ error: 'Phone must be a valid 10-digit number' }, 400);
   }
 
   const email = body.email ? String(body.email).trim().toLowerCase() : null;
@@ -218,16 +211,15 @@ requestsRoute.post('/', async (c) => {
 });
 
 /**
- * GET /requests?phone=9876543210
- * Returns everything this person has submitted, newest first.
- * Powers the My Requests tab.
+ * GET /requests
+ * Everything this person has submitted, newest first.
+ *
+ * The phone number comes from the verified Firebase token, never
+ * from a query parameter — otherwise anyone could read anyone's
+ * requests by guessing a number.
  */
-requestsRoute.get('/', async (c) => {
-  const phone = normalisePhone(c.req.query('phone'));
-
-  if (phone.length !== 10) {
-    return c.json({ error: 'A valid 10-digit phone is required' }, 400);
-  }
+requestsRoute.get('/', requirePhone, async (c) => {
+  const phone = c.get('phone');
 
   try {
     const result = await pool.query(

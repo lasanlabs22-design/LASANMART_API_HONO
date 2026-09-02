@@ -1,23 +1,19 @@
 import { Hono } from 'hono';
 import { pool } from '../db/pool.js';
+import { requirePhone } from '../middleware/requirePhone.js';
 
-export const notificationsRoute = new Hono();
-
-function normalisePhone(input: unknown): string {
-  const digits = String(input ?? '').replace(/\D/g, '');
-  return digits.length > 10 ? digits.slice(-10) : digits;
-}
+export const notificationsRoute = new Hono<{ Variables: { phone: string } }>();
 
 /**
- * GET /notifications?phone=9876543210
+ * GET /notifications
  * Everything for this person, newest first, plus the unread count.
+ *
+ * Phone comes from the verified Firebase token — never a query
+ * parameter, or anyone could read anyone's notifications by guessing
+ * a number.
  */
-notificationsRoute.get('/', async (c) => {
-  const phone = normalisePhone(c.req.query('phone'));
-
-  if (phone.length !== 10) {
-    return c.json({ error: 'A valid 10-digit phone is required' }, 400);
-  }
+notificationsRoute.get('/', requirePhone, async (c) => {
+  const phone = c.get('phone');
 
   try {
     const result = await pool.query(
@@ -41,15 +37,11 @@ notificationsRoute.get('/', async (c) => {
 });
 
 /**
- * GET /notifications/count?phone=...
+ * GET /notifications/count
  * Just the badge number — cheap enough to poll.
  */
-notificationsRoute.get('/count', async (c) => {
-  const phone = normalisePhone(c.req.query('phone'));
-
-  if (phone.length !== 10) {
-    return c.json({ unread: 0 });
-  }
+notificationsRoute.get('/count', requirePhone, async (c) => {
+  const phone = c.get('phone');
 
   try {
     const result = await pool.query(
@@ -69,20 +61,18 @@ notificationsRoute.get('/count', async (c) => {
 
 /**
  * POST /notifications/read
- * Body: { phone, id? }  — one notification, or all of them
+ * Body: { id? }  — one notification, or all of them.
+ * Phone comes from the verified token, so this can only ever
+ * touch the calling person's own notifications.
  */
-notificationsRoute.post('/read', async (c) => {
+notificationsRoute.post('/read', requirePhone, async (c) => {
+  const phone = c.get('phone');
+
   let body: any;
   try {
     body = await c.req.json();
   } catch {
     return c.json({ error: 'Body must be valid JSON' }, 400);
-  }
-
-  const phone = normalisePhone(body.phone);
-
-  if (phone.length !== 10) {
-    return c.json({ error: 'A valid 10-digit phone is required' }, 400);
   }
 
   try {
@@ -119,9 +109,15 @@ notificationsRoute.post('/read', async (c) => {
 /**
  * POST /notifications/token
  * The app registers its device here so we can push to it.
- * Body: { phone, token }
+ * Body: { token }
+ *
+ * Phone comes from the verified token — a push token must only ever
+ * be registered against the number that's actually signed in, or
+ * anyone could redirect someone else's notifications to their own phone.
  */
-notificationsRoute.post('/token', async (c) => {
+notificationsRoute.post('/token', requirePhone, async (c) => {
+  const phone = c.get('phone');
+
   let body: any;
   try {
     body = await c.req.json();
@@ -129,12 +125,7 @@ notificationsRoute.post('/token', async (c) => {
     return c.json({ error: 'Body must be valid JSON' }, 400);
   }
 
-  const phone = normalisePhone(body.phone);
   const token = String(body.token || '').trim();
-
-  if (phone.length !== 10) {
-    return c.json({ error: 'A valid 10-digit phone is required' }, 400);
-  }
 
   if (!token.startsWith('ExponentPushToken')) {
     return c.json({ error: 'Invalid push token' }, 400);
