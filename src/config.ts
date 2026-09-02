@@ -33,6 +33,12 @@ export const config = {
     apiSecret: required('CLOUDINARY_API_SECRET'),
     uploadPreset: process.env.CLOUDINARY_UPLOAD_PRESET || 'lasan_reels',
   },
+  firebase: {
+    projectId: required('FIREBASE_PROJECT_ID'),
+    clientEmail: required('FIREBASE_CLIENT_EMAIL'),
+    // .env stores newlines as literal \n, so turn them back into real ones
+    privateKey: required('FIREBASE_PRIVATE_KEY').replace(/\\n/g, '\n'),
+  },
 
   adminPassword: required('ADMIN_PASSWORD'),
 
