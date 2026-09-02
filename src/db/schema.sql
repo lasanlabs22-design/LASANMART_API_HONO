@@ -95,3 +95,16 @@ ALTER TABLE contacts ADD COLUMN IF NOT EXISTS push_updated_at TIMESTAMPTZ;
 
 CREATE INDEX IF NOT EXISTS idx_contacts_push ON contacts(push_token)
   WHERE push_token IS NOT NULL;
+
+  -- Who liked what. One row per person per reel.
+CREATE TABLE IF NOT EXISTS reel_likes (
+  reel_id TEXT NOT NULL REFERENCES reels(id) ON DELETE CASCADE,
+  contact_id TEXT NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (reel_id, contact_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_reel_likes_reel ON reel_likes(reel_id);
+
+-- Cached count, so the feed doesn't need a join
+ALTER TABLE reels ADD COLUMN IF NOT EXISTS like_count INT NOT NULL DEFAULT 0;
