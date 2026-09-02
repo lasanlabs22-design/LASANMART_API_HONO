@@ -36,8 +36,11 @@ export const config = {
   firebase: {
     projectId: required('FIREBASE_PROJECT_ID'),
     clientEmail: required('FIREBASE_CLIENT_EMAIL'),
-    // .env stores newlines as literal \n, so turn them back into real ones
-    privateKey: required('FIREBASE_PRIVATE_KEY').replace(/\\n/g, '\n'),
+    // Railway may store this with real newlines or with literal \n,
+    // depending on how it was pasted — handle both
+    privateKey: required('FIREBASE_PRIVATE_KEY')
+      .replace(/\\n/g, '\n')
+      .replace(/^["']|["']$/g, ''),
   },
 
   adminPassword: required('ADMIN_PASSWORD'),
