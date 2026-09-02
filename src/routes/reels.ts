@@ -1,17 +1,15 @@
 import { Hono } from 'hono';
 import { pool } from '../db/pool.js';
+import { requirePhone } from '../middleware/requirePhone.js';
 
-export const reelsRoute = new Hono();
-
-function normalisePhone(input: unknown): string {
-  const digits = String(input ?? '').replace(/\D/g, '');
-  return digits.length > 10 ? digits.slice(-10) : digits;
-}
+export const reelsRoute = new Hono<{ Variables: { phone: string } }>();
 
 /**
  * GET /reels
  * The feed the app shows. Only live reels, newest first,
  * with pinned ones (higher sort_order) at the top.
+ *
+ * Deliberately public — the feed is meant to be seen by everyone.
  */
 reelsRoute.get('/', async (c) => {
   const limit = Math.min(50, Number(c.req.query('limit')) || 30);
@@ -35,16 +33,14 @@ reelsRoute.get('/', async (c) => {
 });
 
 /**
- * GET /reels/mine?phone=9876543210
+ * GET /reels/mine
  * Everything this person has posted, including anything the team
  * has hidden — so they can see it's still there.
+ *
+ * The phone comes from the verified token, never a query parameter.
  */
-reelsRoute.get('/mine', async (c) => {
-  const phone = normalisePhone(c.req.query('phone'));
-
-  if (phone.length !== 10) {
-    return c.json({ error: 'A valid 10-digit phone is required' }, 400);
-  }
+reelsRoute.get('/mine', requirePhone, async (c) => {
+  const phone = c.get('phone');
 
   try {
     const result = await pool.query(
@@ -76,9 +72,13 @@ reelsRoute.get('/mine', async (c) => {
  * A user posting from the app. The video is already on Cloudinary —
  * the app uploads there directly and sends us the URLs.
  *
- * Body: { videoUrl, thumbnailUrl?, publicId?, duration?, caption?, phone }
+ * Body: { videoUrl, thumbnailUrl?, publicId?, duration?, caption? }
+ * The poster's identity comes from the token, so nobody can post
+ * a reel under someone else's name.
  */
-reelsRoute.post('/', async (c) => {
+reelsRoute.post('/', requirePhone, async (c) => {
+  const phone = c.get('phone');
+
   let body: any;
 
   try {
@@ -88,18 +88,13 @@ reelsRoute.post('/', async (c) => {
   }
 
   const videoUrl = String(body.videoUrl || '').trim();
-  const phone = normalisePhone(body.phone);
 
   if (!videoUrl.startsWith('http')) {
     return c.json({ error: 'A valid video URL is required' }, 400);
   }
 
-  if (phone.length !== 10) {
-    return c.json({ error: 'A valid 10-digit phone is required' }, 400);
-  }
-
   try {
-    // Who is posting? We only accept reels from people we already know
+    // We only accept reels from people we already know
     const contact = await pool.query(
       'SELECT id, name FROM contacts WHERE phone = $1',
       [phone]
@@ -150,7 +145,8 @@ reelsRoute.post('/', async (c) => {
 
 /**
  * POST /reels/:id/view
- * Bumps the view counter. Fire-and-forget from the app.
+ * Bumps the view counter. Fire-and-forget from the app, and
+ * deliberately open — counting views needs no identity.
  */
 reelsRoute.post('/:id/view', async (c) => {
   const id = c.req.param('id');
