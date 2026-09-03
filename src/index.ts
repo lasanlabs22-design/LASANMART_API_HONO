@@ -21,8 +21,9 @@ app.use(
   '/admin/*',
   cors({
     origin: [
-      'https://lsm-admin-console.vercel.app', // ← replace with your Vercel URL
-      'http://localhost:3001', // local development
+      'https://admin.lasanmart.com',
+      'https://lsm-admin-console.vercel.app',
+      'http://localhost:3001',
       'http://localhost:3000',
     ],
     allowHeaders: ['Content-Type', 'x-admin-key'],
