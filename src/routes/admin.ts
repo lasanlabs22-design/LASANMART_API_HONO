@@ -519,3 +519,151 @@ adminRoute.delete('/reels/:id', async (c) => {
     return c.json({ error: 'Could not delete the reel' }, 500);
   }
 });
+
+/* ---------------- Data deletion ---------------- */
+
+/**
+ * GET /admin/contacts/:id/summary
+ * What would be removed if this person were deleted.
+ * Shown to the team before they confirm.
+ */
+adminRoute.get('/contacts/:id/summary', async (c) => {
+  const id = c.req.param('id');
+
+  try {
+    const contact = await pool.query(
+      'SELECT id, name, phone, email, created_at FROM contacts WHERE id = $1',
+      [id]
+    );
+
+    if (contact.rows.length === 0) {
+      return c.json({ error: 'Contact not found' }, 404);
+    }
+
+    const [requests, notifications, reels] = await Promise.all([
+      pool.query(
+        'SELECT COUNT(*)::int AS n FROM requests WHERE contact_id = $1',
+        [id]
+      ),
+      pool.query(
+        'SELECT COUNT(*)::int AS n FROM notifications WHERE contact_id = $1',
+        [id]
+      ),
+      pool.query(
+        'SELECT id, public_id, caption FROM reels WHERE contact_id = $1',
+        [id]
+      ),
+    ]);
+
+    return c.json({
+      contact: contact.rows[0],
+      counts: {
+        requests: requests.rows[0].n,
+        notifications: notifications.rows[0].n,
+        reels: reels.rows.length,
+      },
+      reels: reels.rows,
+    });
+  } catch (err) {
+    console.error('Failed to build deletion summary:', err);
+    return c.json({ error: 'Could not load the summary' }, 500);
+  }
+});
+
+/**
+ * DELETE /admin/contacts/:id
+ * Removes everything we hold about one person, for GDPR-style
+ * deletion requests. Irreversible.
+ *
+ * Requires ?confirm=<their phone number> so a stray click can't
+ * wipe someone.
+ */
+adminRoute.delete('/contacts/:id', async (c) => {
+  const id = c.req.param('id');
+  const confirm = (c.req.query('confirm') || '').replace(/\D/g, '');
+
+  const client = await pool.connect();
+
+  try {
+    const existing = await client.query(
+      'SELECT phone, name FROM contacts WHERE id = $1',
+      [id]
+    );
+
+    if (existing.rows.length === 0) {
+      return c.json({ error: 'Contact not found' }, 404);
+    }
+
+    const { phone, name } = existing.rows[0];
+
+    if (confirm !== phone) {
+      return c.json(
+        { error: 'Confirmation does not match this contact’s phone number' },
+        400
+      );
+    }
+
+    // Collect the Cloudinary ids before the rows disappear
+    const reels = await client.query(
+      'SELECT public_id FROM reels WHERE contact_id = $1',
+      [id]
+    );
+
+    await client.query('BEGIN');
+
+    // Order matters where foreign keys don't cascade
+    await client.query('DELETE FROM reel_likes WHERE contact_id = $1', [id]);
+    await client.query('DELETE FROM notifications WHERE contact_id = $1', [id]);
+    await client.query('DELETE FROM reels WHERE contact_id = $1', [id]);
+    await client.query('DELETE FROM requests WHERE contact_id = $1', [id]);
+    await client.query('DELETE FROM contacts WHERE id = $1', [id]);
+
+    await client.query('COMMIT');
+
+    // Free the video files. Done after the commit — a stray file is
+    // better than a half-finished deletion.
+    let filesRemoved = 0;
+    for (const row of reels.rows) {
+      if (row.public_id && (await deleteVideo(row.public_id))) {
+        filesRemoved += 1;
+      }
+    }
+
+    console.log(
+      `Deleted all data for ${name} (${phone}); ${filesRemoved} video(s) removed`
+    );
+
+    return c.json({ success: true, filesRemoved });
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    console.error('Failed to delete contact:', err);
+    return c.json({ error: 'Could not delete this contact' }, 500);
+  } finally {
+    client.release();
+  }
+});
+
+/**
+ * DELETE /admin/requests/:id
+ * Removes a single request — for duplicates and test data, rather
+ * than a full deletion request.
+ */
+adminRoute.delete('/requests/:id', async (c) => {
+  const id = c.req.param('id');
+
+  try {
+    const result = await pool.query(
+      'DELETE FROM requests WHERE id = $1 RETURNING id',
+      [id]
+    );
+
+    if (result.rows.length === 0) {
+      return c.json({ error: 'Request not found' }, 404);
+    }
+
+    return c.json({ success: true });
+  } catch (err) {
+    console.error('Failed to delete request:', err);
+    return c.json({ error: 'Could not delete the request' }, 500);
+  }
+});
