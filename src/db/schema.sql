@@ -108,3 +108,64 @@ CREATE INDEX IF NOT EXISTS idx_reel_likes_reel ON reel_likes(reel_id);
 
 -- Cached count, so the feed doesn't need a join
 ALTER TABLE reels ADD COLUMN IF NOT EXISTS like_count INT NOT NULL DEFAULT 0;
+
+-- Creators applying to join Lasan Mart's influencer network.
+-- Deliberately separate from `contacts` — a creator is a different
+-- kind of person from a business posting requests.
+CREATE TABLE IF NOT EXISTS influencers (
+  id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+
+  -- Identity. Phone is verified by Firebase before anything is saved.
+  phone TEXT NOT NULL UNIQUE,
+  name TEXT NOT NULL,
+  email TEXT,
+  photo_url TEXT,
+
+  -- Their public presence
+  instagram_id TEXT,
+  followers TEXT,
+  category TEXT,
+  city TEXT,
+  bio TEXT,
+
+  -- What they charge, in rupees per post
+  rate_per_post INT,
+
+  -- pending → the admin has not looked yet
+  -- approved → visible to businesses in the app
+  -- rejected → declined, with a reason
+  status TEXT NOT NULL DEFAULT 'pending'
+    CHECK (status IN ('pending', 'approved', 'rejected', 'paused')),
+  review_note TEXT,
+  reviewed_at TIMESTAMPTZ,
+
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_influencers_status ON influencers(status);
+CREATE INDEX IF NOT EXISTS idx_influencers_created ON influencers(created_at DESC);
+
+-- Anything a creator asks us for — payment queries, profile changes,
+-- availability, complaints. Kept loose because we don't yet know
+-- what they'll actually ask.
+CREATE TABLE IF NOT EXISTS influencer_requests (
+  id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+  influencer_id TEXT NOT NULL REFERENCES influencers(id) ON DELETE CASCADE,
+
+  type TEXT NOT NULL DEFAULT 'general',
+  subject TEXT,
+  message TEXT NOT NULL,
+
+  status TEXT NOT NULL DEFAULT 'new'
+    CHECK (status IN ('new', 'contacted', 'in_progress', 'closed')),
+  internal_note TEXT,
+
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_inf_requests_influencer
+  ON influencer_requests(influencer_id);
+CREATE INDEX IF NOT EXISTS idx_inf_requests_status
+  ON influencer_requests(status, created_at DESC);
