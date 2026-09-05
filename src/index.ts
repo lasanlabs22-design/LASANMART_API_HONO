@@ -6,6 +6,7 @@ import { requestsRoute } from './routes/requests.js';
 import { notificationsRoute } from './routes/notifications.js';
 import { reelsRoute } from './routes/reels.js';
 import { adminRoute } from './routes/admin.js';
+import { influencersRoute } from './routes/influencers.js';
 
 const app = new Hono();
 
@@ -46,6 +47,11 @@ app.route('/reels', reelsRoute);
 
 /* ---------- Team-facing (used by the admin console) ---------- */
 app.route('/admin', adminRoute);
+
+app.route('/requests', requestsRoute);
+app.route('/notifications', notificationsRoute);
+app.route('/reels', reelsRoute);
+app.route('/influencers', influencersRoute);
 
 serve({ fetch: app.fetch, port: config.port }, (info) => {
   console.log(`Lasan Mart API running on http://localhost:${info.port}`);

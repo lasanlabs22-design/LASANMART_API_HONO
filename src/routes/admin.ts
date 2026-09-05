@@ -667,3 +667,254 @@ adminRoute.delete('/requests/:id', async (c) => {
     return c.json({ error: 'Could not delete the request' }, 500);
   }
 });
+
+/* ---------------- Influencer onboarding ---------------- */
+
+/**
+ * GET /admin/influencers?status=pending&q=name
+ * Creator applications, newest first. Pending come first by default,
+ * since those are what need action.
+ */
+adminRoute.get('/influencers', async (c) => {
+  const status = c.req.query('status');
+  const q = c.req.query('q');
+
+  const conditions: string[] = [];
+  const params: any[] = [];
+
+  if (
+    status &&
+    ['pending', 'approved', 'rejected', 'paused'].includes(status)
+  ) {
+    params.push(status);
+    conditions.push(`i.status = $${params.length}`);
+  }
+
+  if (q) {
+    params.push(`%${q}%`);
+    const n = params.length;
+    conditions.push(
+      `(i.name ILIKE $${n} OR i.phone ILIKE $${n} OR i.instagram_id ILIKE $${n})`
+    );
+  }
+
+  const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+
+  try {
+    const [list, counts] = await Promise.all([
+      pool.query(
+        `SELECT i.id, i.phone, i.name, i.email, i.photo_url, i.instagram_id,
+                i.followers, i.category, i.city, i.bio, i.rate_per_post,
+                i.status, i.review_note, i.reviewed_at, i.created_at,
+                COUNT(r.id)::int AS open_requests
+           FROM influencers i
+           LEFT JOIN influencer_requests r
+             ON r.influencer_id = i.id AND r.status != 'closed'
+           ${where}
+          GROUP BY i.id
+          ORDER BY
+            CASE i.status WHEN 'pending' THEN 0 ELSE 1 END,
+            i.created_at DESC
+          LIMIT 200`,
+        params
+      ),
+      pool.query(`
+        SELECT
+          COUNT(*)::int AS total,
+          COUNT(*) FILTER (WHERE status = 'pending')::int AS pending,
+          COUNT(*) FILTER (WHERE status = 'approved')::int AS approved,
+          COUNT(*) FILTER (WHERE status = 'rejected')::int AS rejected
+        FROM influencers
+      `),
+    ]);
+
+    return c.json({ influencers: list.rows, stats: counts.rows[0] });
+  } catch (err) {
+    console.error('Failed to load creators:', err);
+    return c.json({ error: 'Could not load creators' }, 500);
+  }
+});
+
+/**
+ * PATCH /admin/influencers/:id
+ * Approve, reject, pause, or leave a note.
+ */
+adminRoute.patch('/influencers/:id', async (c) => {
+  const id = c.req.param('id');
+
+  let body: any;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: 'Body must be valid JSON' }, 400);
+  }
+
+  const updates: string[] = [];
+  const params: any[] = [];
+
+  if (body.status !== undefined) {
+    if (!['pending', 'approved', 'rejected', 'paused'].includes(body.status)) {
+      return c.json({ error: 'Invalid status' }, 400);
+    }
+    params.push(body.status);
+    updates.push(`status = $${params.length}`);
+    updates.push(`reviewed_at = now()`);
+  }
+
+  if (body.reviewNote !== undefined) {
+    params.push(String(body.reviewNote).trim() || null);
+    updates.push(`review_note = $${params.length}`);
+  }
+
+  // The team can correct a rate the creator entered wrongly
+  if (body.ratePerPost !== undefined) {
+    params.push(Number(body.ratePerPost) || null);
+    updates.push(`rate_per_post = $${params.length}`);
+  }
+
+  if (updates.length === 0) {
+    return c.json({ error: 'Nothing to update' }, 400);
+  }
+
+  updates.push('updated_at = now()');
+  params.push(id);
+
+  try {
+    const result = await pool.query(
+      `UPDATE influencers SET ${updates.join(', ')}
+        WHERE id = $${params.length}
+        RETURNING id, name, status, review_note, rate_per_post`,
+      params
+    );
+
+    if (result.rows.length === 0) {
+      return c.json({ error: 'Creator not found' }, 404);
+    }
+
+    return c.json({ success: true, influencer: result.rows[0] });
+  } catch (err) {
+    console.error('Failed to update creator:', err);
+    return c.json({ error: 'Could not update this creator' }, 500);
+  }
+});
+
+/**
+ * DELETE /admin/influencers/:id
+ * Removes the application and everything they've asked us.
+ */
+adminRoute.delete('/influencers/:id', async (c) => {
+  const id = c.req.param('id');
+
+  try {
+    const result = await pool.query(
+      'DELETE FROM influencers WHERE id = $1 RETURNING id',
+      [id]
+    );
+
+    if (result.rows.length === 0) {
+      return c.json({ error: 'Creator not found' }, 404);
+    }
+
+    // influencer_requests cascades on delete
+    return c.json({ success: true });
+  } catch (err) {
+    console.error('Failed to delete creator:', err);
+    return c.json({ error: 'Could not delete this creator' }, 500);
+  }
+});
+
+/**
+ * GET /admin/influencer-requests
+ * What creators have asked us for.
+ */
+adminRoute.get('/influencer-requests', async (c) => {
+  const status = c.req.query('status');
+
+  const conditions: string[] = [];
+  const params: any[] = [];
+
+  if (
+    status &&
+    ['new', 'contacted', 'in_progress', 'closed'].includes(status)
+  ) {
+    params.push(status);
+    conditions.push(`r.status = $${params.length}`);
+  }
+
+  const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+
+  try {
+    const result = await pool.query(
+      `SELECT r.id, r.type, r.subject, r.message, r.status,
+              r.internal_note, r.created_at,
+              i.id AS influencer_id, i.name, i.phone, i.instagram_id,
+              i.photo_url
+         FROM influencer_requests r
+         JOIN influencers i ON i.id = r.influencer_id
+         ${where}
+        ORDER BY r.created_at DESC
+        LIMIT 100`,
+      params
+    );
+
+    return c.json({ requests: result.rows });
+  } catch (err) {
+    console.error('Failed to load creator requests:', err);
+    return c.json({ error: 'Could not load requests' }, 500);
+  }
+});
+
+/**
+ * PATCH /admin/influencer-requests/:id
+ */
+adminRoute.patch('/influencer-requests/:id', async (c) => {
+  const id = c.req.param('id');
+
+  let body: any;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: 'Body must be valid JSON' }, 400);
+  }
+
+  const updates: string[] = [];
+  const params: any[] = [];
+
+  if (body.status !== undefined) {
+    if (!['new', 'contacted', 'in_progress', 'closed'].includes(body.status)) {
+      return c.json({ error: 'Invalid status' }, 400);
+    }
+    params.push(body.status);
+    updates.push(`status = $${params.length}`);
+  }
+
+  if (body.internalNote !== undefined) {
+    params.push(String(body.internalNote).trim() || null);
+    updates.push(`internal_note = $${params.length}`);
+  }
+
+  if (updates.length === 0) {
+    return c.json({ error: 'Nothing to update' }, 400);
+  }
+
+  updates.push('updated_at = now()');
+  params.push(id);
+
+  try {
+    const result = await pool.query(
+      `UPDATE influencer_requests SET ${updates.join(', ')}
+        WHERE id = $${params.length}
+        RETURNING id, status, internal_note`,
+      params
+    );
+
+    if (result.rows.length === 0) {
+      return c.json({ error: 'Request not found' }, 404);
+    }
+
+    return c.json({ success: true, request: result.rows[0] });
+  } catch (err) {
+    console.error('Failed to update creator request:', err);
+    return c.json({ error: 'Could not update the request' }, 500);
+  }
+});
