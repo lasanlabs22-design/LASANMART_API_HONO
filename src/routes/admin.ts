@@ -10,6 +10,7 @@ export const adminRoute = new Hono();
 adminRoute.use('*', adminAuth);
 
 const VALID_STATUSES = ['new', 'contacted', 'in_progress', 'closed'];
+const VALID_ROLES = ['influencer', 'vendor', 'freelancer'];
 
 /**
  * GET /admin/stats
@@ -668,7 +669,7 @@ adminRoute.delete('/requests/:id', async (c) => {
   }
 });
 
-/* ---------------- Influencer onboarding ---------------- */
+/* ---------------- Partner onboarding ---------------- */
 
 /**
  * GET /admin/influencers?status=pending&q=name
@@ -677,6 +678,7 @@ adminRoute.delete('/requests/:id', async (c) => {
  */
 adminRoute.get('/influencers', async (c) => {
   const status = c.req.query('status');
+  const role = c.req.query('role');
   const q = c.req.query('q');
 
   const conditions: string[] = [];
@@ -690,11 +692,17 @@ adminRoute.get('/influencers', async (c) => {
     conditions.push(`i.status = $${params.length}`);
   }
 
+  if (role && VALID_ROLES.includes(role)) {
+    params.push(role);
+    conditions.push(`i.role = $${params.length}`);
+  }
+
   if (q) {
     params.push(`%${q}%`);
     const n = params.length;
     conditions.push(
-      `(i.name ILIKE $${n} OR i.phone ILIKE $${n} OR i.instagram_id ILIKE $${n})`
+      `(i.name ILIKE $${n} OR i.phone ILIKE $${n} OR i.instagram_id ILIKE $${n}
+        OR i.company_name ILIKE $${n})`
     );
   }
 
@@ -703,8 +711,10 @@ adminRoute.get('/influencers', async (c) => {
   try {
     const [list, counts] = await Promise.all([
       pool.query(
-        `SELECT i.id, i.phone, i.name, i.email, i.photo_url, i.instagram_id,
-                i.followers, i.category, i.city, i.bio, i.rate_per_post,
+        `SELECT i.id, i.phone, i.role, i.name, i.email, i.photo_url,
+                i.instagram_id, i.followers, i.category, i.city, i.bio,
+                i.rate_per_post, i.company_name, i.gst_number, i.services,
+                i.other_service, i.portfolio_url, i.skills, i.rate_card,
                 i.status, i.review_note, i.reviewed_at, i.created_at,
                 COUNT(r.id)::int AS open_requests
            FROM influencers i
@@ -723,15 +733,18 @@ adminRoute.get('/influencers', async (c) => {
           COUNT(*)::int AS total,
           COUNT(*) FILTER (WHERE status = 'pending')::int AS pending,
           COUNT(*) FILTER (WHERE status = 'approved')::int AS approved,
-          COUNT(*) FILTER (WHERE status = 'rejected')::int AS rejected
+          COUNT(*) FILTER (WHERE status = 'rejected')::int AS rejected,
+          COUNT(*) FILTER (WHERE role = 'influencer')::int AS influencers,
+          COUNT(*) FILTER (WHERE role = 'vendor')::int AS vendors,
+          COUNT(*) FILTER (WHERE role = 'freelancer')::int AS freelancers
         FROM influencers
       `),
     ]);
 
     return c.json({ influencers: list.rows, stats: counts.rows[0] });
   } catch (err) {
-    console.error('Failed to load creators:', err);
-    return c.json({ error: 'Could not load creators' }, 500);
+    console.error('Failed to load partners:', err);
+    return c.json({ error: 'Could not load partners' }, 500);
   }
 });
 

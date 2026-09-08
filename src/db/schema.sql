@@ -169,3 +169,35 @@ CREATE INDEX IF NOT EXISTS idx_inf_requests_influencer
   ON influencer_requests(influencer_id);
 CREATE INDEX IF NOT EXISTS idx_inf_requests_status
   ON influencer_requests(status, created_at DESC);
+
+  -- Lasan Hub partners: influencers, vendors and freelancers.
+-- One table with a role, because the shared parts — phone, status,
+-- review, support requests — far outweigh the differences.
+ALTER TABLE influencers ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'influencer';
+
+-- Added separately so re-running the migration doesn't fail on a
+-- constraint that already exists
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'influencers_role_check'
+  ) THEN
+    ALTER TABLE influencers ADD CONSTRAINT influencers_role_check
+      CHECK (role IN ('influencer', 'vendor', 'freelancer'));
+  END IF;
+END $$;
+
+-- Vendor fields
+ALTER TABLE influencers ADD COLUMN IF NOT EXISTS company_name TEXT;
+ALTER TABLE influencers ADD COLUMN IF NOT EXISTS gst_number TEXT;
+ALTER TABLE influencers ADD COLUMN IF NOT EXISTS services JSONB;
+ALTER TABLE influencers ADD COLUMN IF NOT EXISTS other_service TEXT;
+
+-- Freelancer fields
+ALTER TABLE influencers ADD COLUMN IF NOT EXISTS portfolio_url TEXT;
+ALTER TABLE influencers ADD COLUMN IF NOT EXISTS skills JSONB;
+
+-- Vendors and freelancers price by rate card; influencers keep rate_per_post
+ALTER TABLE influencers ADD COLUMN IF NOT EXISTS rate_card TEXT;
+
+CREATE INDEX IF NOT EXISTS idx_partners_role ON influencers(role, status);

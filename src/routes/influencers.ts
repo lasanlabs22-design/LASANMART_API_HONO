@@ -12,19 +12,23 @@ const VALID_REQUEST_TYPES = [
   'complaint',
 ];
 
+const VALID_ROLES = ['influencer', 'vendor', 'freelancer'];
+
 /**
  * GET /influencers/me
- * The creator's own profile, or null if they haven't created one.
- * This is what the app checks on launch to decide which screen to show.
+ * This partner's own profile, or null if they haven't made one.
+ * The app checks this on launch to decide which screen to show.
  */
 influencersRoute.get('/me', requirePhone, async (c) => {
   const phone = c.get('phone');
 
   try {
     const result = await pool.query(
-      `SELECT id, phone, name, email, photo_url, instagram_id, followers,
-              category, city, bio, rate_per_post, status, review_note,
-              created_at
+      `SELECT id, phone, role, name, email, photo_url,
+              instagram_id, followers, category, city, bio, rate_per_post,
+              company_name, gst_number, services, other_service,
+              portfolio_url, skills, rate_card,
+              status, review_note, created_at
          FROM influencers
         WHERE phone = $1`,
       [phone]
@@ -32,17 +36,17 @@ influencersRoute.get('/me', requirePhone, async (c) => {
 
     return c.json({ influencer: result.rows[0] || null });
   } catch (err) {
-    console.error('Failed to load creator profile:', err);
+    console.error('Failed to load partner profile:', err);
     return c.json({ error: 'Could not load your profile' }, 500);
   }
 });
 
 /**
  * POST /influencers
- * Create or update the creator's own profile.
+ * Create or update a partner profile — influencer, vendor or freelancer.
  *
- * Editing an approved profile sends it back to pending — otherwise
- * someone could get approved with modest rates then quietly change them.
+ * Editing an approved profile sends it back to pending, so nobody gets
+ * approved on modest rates and then quietly changes them.
  */
 influencersRoute.post('/', requirePhone, async (c) => {
   const phone = c.get('phone');
@@ -54,17 +58,36 @@ influencersRoute.post('/', requirePhone, async (c) => {
     return c.json({ error: 'Body must be valid JSON' }, 400);
   }
 
+  const role = VALID_ROLES.includes(body.role) ? body.role : 'influencer';
+
   const name = String(body.name || '').trim();
   if (name.length < 2) {
     return c.json({ error: 'Please enter your name' }, 400);
   }
 
-  const instagram = String(body.instagramId || '')
-    .trim()
-    .replace(/^@/, '');
+  /* What each role must supply before we'll take it seriously */
 
-  if (!instagram) {
+  const instagram = body.instagramId
+    ? String(body.instagramId).trim().replace(/^@/, '')
+    : null;
+
+  if (role === 'influencer' && !instagram) {
     return c.json({ error: 'Instagram handle is required' }, 400);
+  }
+
+  if (role === 'vendor') {
+    if (!String(body.companyName || '').trim()) {
+      return c.json({ error: 'Company name is required' }, 400);
+    }
+    if (!Array.isArray(body.services) || body.services.length === 0) {
+      return c.json({ error: 'Pick at least one service you offer' }, 400);
+    }
+  }
+
+  if (role === 'freelancer') {
+    if (!Array.isArray(body.skills) || body.skills.length === 0) {
+      return c.json({ error: 'Pick at least one skill' }, 400);
+    }
   }
 
   const email = body.email ? String(body.email).trim().toLowerCase() : null;
@@ -80,26 +103,38 @@ influencersRoute.post('/', requirePhone, async (c) => {
   try {
     const result = await pool.query(
       `INSERT INTO influencers
-        (phone, name, email, photo_url, instagram_id, followers,
-         category, city, bio, rate_per_post, status)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'pending')
+        (phone, role, name, email, photo_url,
+         instagram_id, followers, category, city, bio, rate_per_post,
+         company_name, gst_number, services, other_service,
+         portfolio_url, skills, rate_card, status)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
+               $12, $13, $14, $15, $16, $17, $18, 'pending')
        ON CONFLICT (phone) DO UPDATE SET
+         role = EXCLUDED.role,
          name = EXCLUDED.name,
          email = COALESCE(EXCLUDED.email, influencers.email),
          photo_url = COALESCE(EXCLUDED.photo_url, influencers.photo_url),
-         instagram_id = EXCLUDED.instagram_id,
+         instagram_id = COALESCE(EXCLUDED.instagram_id, influencers.instagram_id),
          followers = COALESCE(EXCLUDED.followers, influencers.followers),
          category = COALESCE(EXCLUDED.category, influencers.category),
          city = COALESCE(EXCLUDED.city, influencers.city),
          bio = COALESCE(EXCLUDED.bio, influencers.bio),
          rate_per_post = COALESCE(EXCLUDED.rate_per_post, influencers.rate_per_post),
+         company_name = COALESCE(EXCLUDED.company_name, influencers.company_name),
+         gst_number = COALESCE(EXCLUDED.gst_number, influencers.gst_number),
+         services = COALESCE(EXCLUDED.services, influencers.services),
+         other_service = COALESCE(EXCLUDED.other_service, influencers.other_service),
+         portfolio_url = COALESCE(EXCLUDED.portfolio_url, influencers.portfolio_url),
+         skills = COALESCE(EXCLUDED.skills, influencers.skills),
+         rate_card = COALESCE(EXCLUDED.rate_card, influencers.rate_card),
          -- Any edit needs looking at again
          status = 'pending',
          review_note = NULL,
          updated_at = now()
-       RETURNING id, status`,
+       RETURNING id, role, status`,
       [
         phone,
+        role,
         name,
         email,
         body.photoUrl || null,
@@ -109,19 +144,26 @@ influencersRoute.post('/', requirePhone, async (c) => {
         body.city || null,
         body.bio ? String(body.bio).trim().slice(0, 500) : null,
         rate,
+        body.companyName ? String(body.companyName).trim() : null,
+        body.gstNumber ? String(body.gstNumber).trim().toUpperCase() : null,
+        Array.isArray(body.services) ? JSON.stringify(body.services) : null,
+        body.otherService ? String(body.otherService).trim() : null,
+        body.portfolioUrl ? String(body.portfolioUrl).trim() : null,
+        Array.isArray(body.skills) ? JSON.stringify(body.skills) : null,
+        body.rateCard ? String(body.rateCard).trim().slice(0, 500) : null,
       ]
     );
 
-    return c.json({ success: true, influencer: result.rows[0] }, 201);
+    return c.json({ success: true, partner: result.rows[0] }, 201);
   } catch (err) {
-    console.error('Failed to save creator profile:', err);
+    console.error('Failed to save partner profile:', err);
     return c.json({ error: 'Could not save your profile' }, 500);
   }
 });
 
 /**
  * GET /influencers/requests
- * Everything this creator has asked us, newest first.
+ * Everything this partner has asked us, newest first.
  */
 influencersRoute.get('/requests', requirePhone, async (c) => {
   const phone = c.get('phone');
@@ -139,14 +181,14 @@ influencersRoute.get('/requests', requirePhone, async (c) => {
 
     return c.json({ requests: result.rows });
   } catch (err) {
-    console.error('Failed to load creator requests:', err);
+    console.error('Failed to load partner requests:', err);
     return c.json({ error: 'Could not load your requests' }, 500);
   }
 });
 
 /**
  * POST /influencers/requests
- * A creator raising something with our team.
+ * A partner raising something with our team.
  */
 influencersRoute.post('/requests', requirePhone, async (c) => {
   const phone = c.get('phone');
@@ -166,12 +208,12 @@ influencersRoute.post('/requests', requirePhone, async (c) => {
   const type = VALID_REQUEST_TYPES.includes(body.type) ? body.type : 'general';
 
   try {
-    const creator = await pool.query(
+    const partner = await pool.query(
       'SELECT id FROM influencers WHERE phone = $1',
       [phone]
     );
 
-    if (creator.rows.length === 0) {
+    if (partner.rows.length === 0) {
       return c.json({ error: 'Create your profile first' }, 403);
     }
 
@@ -181,7 +223,7 @@ influencersRoute.post('/requests', requirePhone, async (c) => {
        VALUES ($1, $2, $3, $4)
        RETURNING id, type, subject, message, status, created_at`,
       [
-        creator.rows[0].id,
+        partner.rows[0].id,
         type,
         body.subject ? String(body.subject).trim().slice(0, 120) : null,
         message.slice(0, 1000),
@@ -190,7 +232,7 @@ influencersRoute.post('/requests', requirePhone, async (c) => {
 
     return c.json({ success: true, request: result.rows[0] }, 201);
   } catch (err) {
-    console.error('Failed to create creator request:', err);
+    console.error('Failed to create partner request:', err);
     return c.json({ error: 'Could not send your request' }, 500);
   }
 });
