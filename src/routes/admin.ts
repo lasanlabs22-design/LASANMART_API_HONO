@@ -861,7 +861,7 @@ adminRoute.get('/influencer-requests', async (c) => {
       `SELECT r.id, r.type, r.subject, r.message, r.status,
               r.internal_note, r.created_at,
               i.id AS influencer_id, i.name, i.phone, i.instagram_id,
-              i.photo_url
+              i.photo_url, i.role
          FROM influencer_requests r
          JOIN influencers i ON i.id = r.influencer_id
          ${where}
