@@ -255,8 +255,8 @@ influencersRoute.get('/work', requirePhone, async (c) => {
     const result = await pool.query(
       `SELECT a.id, a.status, a.brief, a.decline_reason, a.partner_note,
               a.assigned_at, a.responded_at, a.completed_at,
-              r.type, r.title, r.description, r.details, r.city,
-              c.name AS customer_name
+                           r.type, r.title, r.description, r.details,
+              c.city, c.name AS customer_name
          FROM request_assignments a
          JOIN influencers i ON i.id = a.partner_id
          JOIN requests r ON r.id = a.request_id
