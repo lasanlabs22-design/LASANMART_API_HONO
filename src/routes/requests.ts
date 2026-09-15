@@ -211,6 +211,44 @@ requestsRoute.post('/', requirePhone, async (c) => {
 });
 
 /**
+ * GET /requests/contact
+ * The contact record behind the verified number — so someone signing in
+ * on a new phone gets their name and email back, not an empty profile.
+ *
+ * Declared before GET / purely for readability; the paths don't collide.
+ */
+requestsRoute.get('/contact', requirePhone, async (c) => {
+  const phone = c.get('phone');
+
+  try {
+    const result = await pool.query(
+      `SELECT name, email, company_name, company_description, sector, city
+         FROM contacts WHERE phone = $1`,
+      [phone]
+    );
+
+    const row = result.rows[0];
+
+    return c.json({
+      contact: row
+        ? {
+            name: row.name,
+            email: row.email,
+            phone,
+            companyName: row.company_name,
+            companyDescription: row.company_description,
+            sector: row.sector,
+            city: row.city,
+          }
+        : null,
+    });
+  } catch (err) {
+    console.error('Failed to load contact:', err);
+    return c.json({ error: 'Could not load your details' }, 500);
+  }
+});
+
+/**
  * GET /requests
  * Everything this person has submitted, newest first.
  *
