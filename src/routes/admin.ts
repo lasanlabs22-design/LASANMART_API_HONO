@@ -931,3 +931,195 @@ adminRoute.patch('/influencer-requests/:id', async (c) => {
     return c.json({ error: 'Could not update the request' }, 500);
   }
 });
+
+/* ---------------- Assigning work to vendors ---------------- */
+
+/**
+ * GET /admin/requests/:id/assign
+ * Everything the team needs to place this request: the request itself,
+ * approved vendors who offer the service, and who already has it.
+ */
+adminRoute.get('/requests/:id/assign', async (c) => {
+  const requestId = c.req.param('id');
+
+  try {
+    const reqRow = await pool.query(
+      `SELECT r.id, r.type, r.title, r.description, r.details, r.status,
+              c.name AS customer_name, c.phone AS customer_phone,
+              c.city AS customer_city
+         FROM requests r
+         JOIN contacts c ON c.id = r.contact_id
+        WHERE r.id = $1`,
+      [requestId]
+    );
+
+    if (reqRow.rows.length === 0) {
+      return c.json({ error: 'Request not found' }, 404);
+    }
+
+    const request = reqRow.rows[0];
+    const service = request.details?.service || null;
+
+    // Approved vendors, those who offer this exact service first
+    const vendors = await pool.query(
+      `SELECT i.id, i.name, i.phone, i.company_name, i.photo_url,
+              i.services, i.city, i.rate_card, i.gst_number,
+              COUNT(a.id) FILTER (WHERE a.status IN ('accepted','in_progress'))::int
+                AS active_jobs,
+              COUNT(f.id) FILTER (WHERE f.verdict = 'good')::int AS good_jobs,
+              COUNT(f.id)::int AS rated_jobs,
+              CASE WHEN $1::text IS NULL THEN false
+                   ELSE i.services @> to_jsonb(ARRAY[$1::text])
+              END AS offers_this
+         FROM influencers i
+         LEFT JOIN request_assignments a ON a.partner_id = i.id
+         LEFT JOIN assignment_feedback f ON f.partner_id = i.id
+        WHERE i.role = 'vendor' AND i.status = 'approved'
+        GROUP BY i.id
+        ORDER BY offers_this DESC, good_jobs DESC, i.created_at DESC`,
+      [service]
+    );
+
+    const existing = await pool.query(
+      `SELECT a.*, i.name, i.company_name, i.phone, i.photo_url,
+              f.verdict, f.comment
+         FROM request_assignments a
+         JOIN influencers i ON i.id = a.partner_id
+         LEFT JOIN assignment_feedback f ON f.assignment_id = a.id
+        WHERE a.request_id = $1
+        ORDER BY a.assigned_at DESC`,
+      [requestId]
+    );
+
+    return c.json({
+      request,
+      service,
+      vendors: vendors.rows,
+      assignments: existing.rows,
+    });
+  } catch (err) {
+    console.error('Failed to load assignment view:', err);
+    return c.json({ error: 'Could not load vendors' }, 500);
+  }
+});
+
+/**
+ * POST /admin/requests/:id/assign
+ * Body: { partnerId, brief? }
+ */
+adminRoute.post('/requests/:id/assign', async (c) => {
+  const requestId = c.req.param('id');
+
+  let body: any;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: 'Body must be valid JSON' }, 400);
+  }
+
+  if (!body.partnerId) {
+    return c.json({ error: 'Pick a vendor' }, 400);
+  }
+
+  try {
+    const result = await pool.query(
+      `INSERT INTO request_assignments (request_id, partner_id, brief)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (request_id, partner_id) DO UPDATE SET
+         status = 'offered',
+         brief = EXCLUDED.brief,
+         decline_reason = NULL,
+         assigned_at = now(),
+         responded_at = NULL
+       RETURNING id, status`,
+      [
+        requestId,
+        body.partnerId,
+        body.brief ? String(body.brief).trim().slice(0, 1000) : null,
+      ]
+    );
+
+    // Move the request along, so the team can see it's been placed
+    await pool
+      .query(
+        `UPDATE requests SET status = 'in_progress', updated_at = now()
+          WHERE id = $1 AND status = 'new'`,
+        [requestId]
+      )
+      .catch(() => {});
+
+    return c.json({ success: true, assignment: result.rows[0] }, 201);
+  } catch (err) {
+    console.error('Failed to assign:', err);
+    return c.json({ error: 'Could not assign this vendor' }, 500);
+  }
+});
+
+/**
+ * PATCH /admin/assignments/:id
+ * Withdraw, or record what a vendor said on the phone.
+ */
+adminRoute.patch('/assignments/:id', async (c) => {
+  const id = c.req.param('id');
+
+  let body: any;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: 'Body must be valid JSON' }, 400);
+  }
+
+  const valid = [
+    'offered',
+    'accepted',
+    'declined',
+    'in_progress',
+    'completed',
+    'withdrawn',
+  ];
+
+  const updates: string[] = [];
+  const params: any[] = [];
+
+  if (body.status !== undefined) {
+    if (!valid.includes(body.status)) {
+      return c.json({ error: 'Invalid status' }, 400);
+    }
+    params.push(body.status);
+    updates.push(`status = $${params.length}`);
+    updates.push('responded_at = now()');
+
+    if (body.status === 'completed') {
+      updates.push('completed_at = now()');
+    }
+  }
+
+  if (body.partnerNote !== undefined) {
+    params.push(String(body.partnerNote).trim() || null);
+    updates.push(`partner_note = $${params.length}`);
+  }
+
+  if (updates.length === 0) {
+    return c.json({ error: 'Nothing to update' }, 400);
+  }
+
+  params.push(id);
+
+  try {
+    const result = await pool.query(
+      `UPDATE request_assignments SET ${updates.join(', ')}
+        WHERE id = $${params.length}
+        RETURNING id, status`,
+      params
+    );
+
+    if (result.rows.length === 0) {
+      return c.json({ error: 'Assignment not found' }, 404);
+    }
+
+    return c.json({ success: true, assignment: result.rows[0] });
+  } catch (err) {
+    console.error('Failed to update assignment:', err);
+    return c.json({ error: 'Could not update' }, 500);
+  }
+});

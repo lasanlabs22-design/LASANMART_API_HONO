@@ -201,3 +201,54 @@ ALTER TABLE influencers ADD COLUMN IF NOT EXISTS skills JSONB;
 ALTER TABLE influencers ADD COLUMN IF NOT EXISTS rate_card TEXT;
 
 CREATE INDEX IF NOT EXISTS idx_partners_role ON influencers(role, status);
+
+-- A Lasan Mart request handed to a Lasan Hub vendor.
+-- Manual assignment for now; the shape supports matching later.
+CREATE TABLE IF NOT EXISTS request_assignments (
+  id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+  request_id TEXT NOT NULL REFERENCES requests(id) ON DELETE CASCADE,
+  partner_id TEXT NOT NULL REFERENCES influencers(id) ON DELETE CASCADE,
+
+  -- offered    → sent, awaiting their answer
+  -- accepted   → they've taken it on
+  -- declined   → they passed, with a reason
+  -- in_progress→ work has started
+  -- completed  → they say it's done
+  -- withdrawn  → we pulled it back
+  status TEXT NOT NULL DEFAULT 'offered'
+    CHECK (status IN ('offered','accepted','declined','in_progress','completed','withdrawn')),
+
+  brief TEXT,
+  decline_reason TEXT,
+  partner_note TEXT,
+
+  assigned_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  responded_at TIMESTAMPTZ,
+  completed_at TIMESTAMPTZ,
+
+  UNIQUE (request_id, partner_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_assignments_request
+  ON request_assignments(request_id);
+CREATE INDEX IF NOT EXISTS idx_assignments_partner
+  ON request_assignments(partner_id, status);
+
+-- How the customer found the work. Deliberately not a 1-5 score —
+-- everyone gives 5 and it tells us nothing. Three plain answers,
+-- kept internal to our team.
+CREATE TABLE IF NOT EXISTS assignment_feedback (
+  id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+  assignment_id TEXT NOT NULL UNIQUE
+    REFERENCES request_assignments(id) ON DELETE CASCADE,
+  partner_id TEXT NOT NULL REFERENCES influencers(id) ON DELETE CASCADE,
+
+  -- good / okay / poor
+  verdict TEXT NOT NULL CHECK (verdict IN ('good','okay','poor')),
+  comment TEXT,
+
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_feedback_partner
+  ON assignment_feedback(partner_id);
