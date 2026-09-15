@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { pool } from '../db/pool.js';
 import { requirePhone } from '../middleware/requirePhone.js';
+import { createNotification } from '../lib/notifications.js';
 
 export const influencersRoute = new Hono<{ Variables: { phone: string } }>();
 
@@ -234,5 +235,131 @@ influencersRoute.post('/requests', requirePhone, async (c) => {
   } catch (err) {
     console.error('Failed to create partner request:', err);
     return c.json({ error: 'Could not send your request' }, 500);
+  }
+});
+
+/* ---------------- Work assigned to this partner ---------------- */
+
+/**
+ * GET /influencers/work
+ * Everything offered to this partner, newest first.
+ *
+ * The customer's contact details are deliberately withheld — the
+ * partner sees the job and the city, and talks to us about anything
+ * else. That's what keeps us in the middle of the relationship.
+ */
+influencersRoute.get('/work', requirePhone, async (c) => {
+  const phone = c.get('phone');
+
+  try {
+    const result = await pool.query(
+      `SELECT a.id, a.status, a.brief, a.decline_reason, a.partner_note,
+              a.assigned_at, a.responded_at, a.completed_at,
+              r.type, r.title, r.description, r.details, r.city,
+              c.name AS customer_name
+         FROM request_assignments a
+         JOIN influencers i ON i.id = a.partner_id
+         JOIN requests r ON r.id = a.request_id
+         JOIN contacts c ON c.id = r.contact_id
+        WHERE i.phone = $1
+        ORDER BY
+          CASE a.status WHEN 'offered' THEN 0
+                        WHEN 'accepted' THEN 1
+                        WHEN 'in_progress' THEN 2
+                        ELSE 3 END,
+          a.assigned_at DESC
+        LIMIT 100`,
+      [phone]
+    );
+
+    // Only the first name reaches them — "Aaron", not "Aaron Amit Birru"
+    const jobs = result.rows.map((r) => ({
+      ...r,
+      customer_name: String(r.customer_name || '').split(' ')[0],
+    }));
+
+    return c.json({ jobs });
+  } catch (err) {
+    console.error('Failed to load assigned work:', err);
+    return c.json({ error: 'Could not load your work' }, 500);
+  }
+});
+
+/**
+ * PATCH /influencers/work/:id
+ * The partner accepting, declining, starting or finishing a job.
+ *
+ * Ownership is checked in the query — a partner can only touch
+ * assignments that are theirs.
+ */
+influencersRoute.patch('/work/:id', requirePhone, async (c) => {
+  const id = c.req.param('id');
+  const phone = c.get('phone');
+
+  let body: any;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: 'Body must be valid JSON' }, 400);
+  }
+
+  // What a partner is allowed to set themselves
+  const allowed = ['accepted', 'declined', 'in_progress', 'completed'];
+
+  if (!allowed.includes(body.status)) {
+    return c.json({ error: 'Invalid status' }, 400);
+  }
+
+  if (body.status === 'declined' && !String(body.reason || '').trim()) {
+    return c.json({ error: 'Please tell us why' }, 400);
+  }
+
+  try {
+    const result = await pool.query(
+      `UPDATE request_assignments a
+          SET status = $1,
+              decline_reason = CASE WHEN $1 = 'declined' THEN $2 ELSE a.decline_reason END,
+              partner_note = COALESCE($3, a.partner_note),
+              responded_at = now(),
+              completed_at = CASE WHEN $1 = 'completed' THEN now() ELSE a.completed_at END
+         FROM influencers i
+        WHERE a.id = $4
+          AND a.partner_id = i.id
+          AND i.phone = $5
+        RETURNING a.id, a.status, a.request_id`,
+      [
+        body.status,
+        body.reason ? String(body.reason).trim().slice(0, 500) : null,
+        body.note ? String(body.note).trim().slice(0, 500) : null,
+        id,
+        phone,
+      ]
+    );
+
+    if (result.rows.length === 0) {
+      return c.json({ error: 'Job not found' }, 404);
+    }
+
+    // Tell the customer when it's done
+    if (body.status === 'completed') {
+      const req = await pool.query(
+        'SELECT contact_id, title FROM requests WHERE id = $1',
+        [result.rows[0].request_id]
+      );
+
+      if (req.rows[0]) {
+        await createNotification(req.rows[0].contact_id, {
+          requestId: result.rows[0].request_id,
+          type: 'status',
+          title: 'Work completed',
+          body: `Our partner has finished the work on "${req.rows[0].title || 'your request'}". We'll be in touch to check you're happy with it.`,
+        }).catch(() => {});
+      }
+    }
+
+    return c.json({ success: true, job: result.rows[0] });
+  } catch (err) {
+    console.error('Failed to update job:', err);
+    return c.json({ error: 'Could not update this job' }, 500);
   }
 });

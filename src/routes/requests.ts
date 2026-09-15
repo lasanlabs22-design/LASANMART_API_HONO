@@ -249,6 +249,97 @@ requestsRoute.get('/contact', requirePhone, async (c) => {
 });
 
 /**
+ * GET /requests/:id/progress
+ * What the customer is allowed to see about who's doing their work.
+ *
+ * No company name, no phone, no GST — just that a partner has it and
+ * where it's got to.
+ */
+requestsRoute.get('/:id/progress', requirePhone, async (c) => {
+  const id = c.req.param('id');
+  const phone = c.get('phone');
+
+  try {
+    const result = await pool.query(
+      `SELECT a.status, a.assigned_at, a.completed_at
+         FROM request_assignments a
+         JOIN requests r ON r.id = a.request_id
+         JOIN contacts c ON c.id = r.contact_id
+        WHERE a.request_id = $1
+          AND c.phone = $2
+          AND a.status IN ('accepted','in_progress','completed')
+        ORDER BY a.assigned_at DESC
+        LIMIT 1`,
+      [id, phone]
+    );
+
+    return c.json({ progress: result.rows[0] || null });
+  } catch (err) {
+    console.error('Failed to load progress:', err);
+    return c.json({ error: 'Could not load progress' }, 500);
+  }
+});
+
+/**
+ * POST /requests/:id/feedback
+ * Body: { verdict: 'good' | 'okay' | 'poor', comment? }
+ *
+ * Deliberately three answers rather than five stars — everyone gives
+ * five, and a compressed scale tells us nothing. Kept internal.
+ */
+requestsRoute.post('/:id/feedback', requirePhone, async (c) => {
+  const id = c.req.param('id');
+  const phone = c.get('phone');
+
+  let body: any;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: 'Body must be valid JSON' }, 400);
+  }
+
+  if (!['good', 'okay', 'poor'].includes(body.verdict)) {
+    return c.json({ error: 'Invalid verdict' }, 400);
+  }
+
+  try {
+    // Find the completed assignment, and check it's theirs to rate
+    const assignment = await pool.query(
+      `SELECT a.id, a.partner_id
+         FROM request_assignments a
+         JOIN requests r ON r.id = a.request_id
+         JOIN contacts c ON c.id = r.contact_id
+        WHERE a.request_id = $1 AND c.phone = $2 AND a.status = 'completed'
+        LIMIT 1`,
+      [id, phone]
+    );
+
+    if (assignment.rows.length === 0) {
+      return c.json({ error: 'Nothing to give feedback on yet' }, 404);
+    }
+
+    await pool.query(
+      `INSERT INTO assignment_feedback (assignment_id, partner_id, verdict, comment)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (assignment_id) DO UPDATE SET
+         verdict = EXCLUDED.verdict,
+         comment = EXCLUDED.comment`,
+      [
+        assignment.rows[0].id,
+        assignment.rows[0].partner_id,
+        body.verdict,
+        body.comment ? String(body.comment).trim().slice(0, 500) : null,
+      ]
+    );
+
+    return c.json({ success: true });
+  } catch (err) {
+    console.error('Failed to save feedback:', err);
+    return c.json({ error: 'Could not save your feedback' }, 500);
+  }
+});
+
+/**
  * GET /requests
  * Everything this person has submitted, newest first.
  *
