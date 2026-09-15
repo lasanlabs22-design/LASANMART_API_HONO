@@ -222,7 +222,8 @@ requestsRoute.get('/contact', requirePhone, async (c) => {
 
   try {
     const result = await pool.query(
-      `SELECT name, email, company_name, company_description, sector, city
+      `SELECT name, email, company_name, company_description, sector, city,
+              photo_url, logo_url
          FROM contacts WHERE phone = $1`,
       [phone]
     );
@@ -239,12 +240,45 @@ requestsRoute.get('/contact', requirePhone, async (c) => {
             companyDescription: row.company_description,
             sector: row.sector,
             city: row.city,
+            photoUrl: row.photo_url,
+            logoUrl: row.logo_url,
           }
         : null,
     });
   } catch (err) {
     console.error('Failed to load contact:', err);
     return c.json({ error: 'Could not load your details' }, 500);
+  }
+});
+
+/**
+ * POST /requests/contact
+ * Saves profile details that aren't tied to a request — photos, mainly.
+ */
+requestsRoute.post('/contact', requirePhone, async (c) => {
+  const phone = c.get('phone');
+
+  let body: any;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: 'Body must be valid JSON' }, 400);
+  }
+
+  try {
+    await pool.query(
+      `UPDATE contacts SET
+         photo_url = COALESCE($1, photo_url),
+         logo_url = COALESCE($2, logo_url),
+         updated_at = now()
+       WHERE phone = $3`,
+      [body.photoUrl || null, body.logoUrl || null, phone]
+    );
+
+    return c.json({ success: true });
+  } catch (err) {
+    console.error('Failed to save contact details:', err);
+    return c.json({ error: 'Could not save' }, 500);
   }
 });
 

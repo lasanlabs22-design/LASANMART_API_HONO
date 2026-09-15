@@ -252,3 +252,8 @@ CREATE TABLE IF NOT EXISTS assignment_feedback (
 
 CREATE INDEX IF NOT EXISTS idx_feedback_partner
   ON assignment_feedback(partner_id);
+
+  -- Profile photo and company logo, hosted on Cloudinary so they
+-- survive a reinstall and can be shown in the admin console
+ALTER TABLE contacts ADD COLUMN IF NOT EXISTS photo_url TEXT;
+ALTER TABLE contacts ADD COLUMN IF NOT EXISTS logo_url TEXT;
