@@ -196,16 +196,22 @@ adminRoute.get('/requests/:id', async (c) => {
           c.id AS contact_id, c.name, c.phone, c.email,
           c.company_name, c.company_description, c.sector, c.city,
           c.created_at AS contact_since,
-          -- Who's doing the work, if anyone
+                  -- Who has the work, how it's going, and what the client said
           (SELECT json_build_object(
+              'id', a2.id,
               'partner_name', i2.name,
               'company_name', i2.company_name,
-              'status', a2.status
+              'partner_phone', i2.phone,
+              'status', a2.status,
+              'decline_reason', a2.decline_reason,
+              'assigned_at', a2.assigned_at,
+              'verdict', f2.verdict,
+              'comment', f2.comment
             )
              FROM request_assignments a2
              JOIN influencers i2 ON i2.id = a2.partner_id
+             LEFT JOIN assignment_feedback f2 ON f2.assignment_id = a2.id
             WHERE a2.request_id = r.id
-              AND a2.status IN ('offered','accepted','in_progress','completed')
             ORDER BY a2.assigned_at DESC
             LIMIT 1) AS assignment
         FROM requests r
