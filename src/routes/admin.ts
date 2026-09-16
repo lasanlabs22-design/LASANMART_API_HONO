@@ -957,7 +957,8 @@ adminRoute.patch('/influencer-requests/:id', async (c) => {
 /**
  * GET /admin/requests/:id/assign
  * Everything the team needs to place this request: the request itself,
- * approved vendors who offer the service, and who already has it.
+ * approved vendors/freelancers who offer the service or skill, and
+ * who already has it.
  */
 adminRoute.get('/requests/:id/assign', async (c) => {
   const requestId = c.req.param('id');
@@ -978,23 +979,26 @@ adminRoute.get('/requests/:id/assign', async (c) => {
     }
 
     const request = reqRow.rows[0];
-    const service = request.details?.service || null;
+    const service =
+      request.details?.service || request.details?.services?.[0] || null;
 
-    // Approved vendors, those who offer this exact service first
+    // Approved vendors and freelancers, those who offer this exact
+    // service/skill first
     const vendors = await pool.query(
       `SELECT i.id, i.name, i.phone, i.company_name, i.photo_url,
-              i.services, i.city, i.rate_card, i.gst_number,
+              i.services, i.skills, i.role, i.city, i.rate_card, i.gst_number,
               COUNT(a.id) FILTER (WHERE a.status IN ('accepted','in_progress'))::int
                 AS active_jobs,
               COUNT(f.id) FILTER (WHERE f.verdict = 'good')::int AS good_jobs,
               COUNT(f.id)::int AS rated_jobs,
               CASE WHEN $1::text IS NULL THEN false
-                   ELSE i.services @> to_jsonb(ARRAY[$1::text])
+                   WHEN i.role = 'vendor' THEN i.services @> to_jsonb(ARRAY[$1::text])
+                   ELSE i.skills @> to_jsonb(ARRAY[$1::text])
               END AS offers_this
          FROM influencers i
          LEFT JOIN request_assignments a ON a.partner_id = i.id
          LEFT JOIN assignment_feedback f ON f.partner_id = i.id
-        WHERE i.role = 'vendor' AND i.status = 'approved'
+        WHERE i.role IN ('vendor', 'freelancer') AND i.status = 'approved'
         GROUP BY i.id
         ORDER BY offers_this DESC, good_jobs DESC, i.created_at DESC`,
       [service]
@@ -1073,7 +1077,8 @@ adminRoute.post('/requests/:id/assign', async (c) => {
       requestId,
     ]);
 
-    const service = req.rows[0]?.details?.service;
+    const service =
+      req.rows[0]?.details?.service || req.rows[0]?.details?.services?.[0];
 
     await notifyPartner(body.partnerId, {
       assignmentId: result.rows[0].id,
