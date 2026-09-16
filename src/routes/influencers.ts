@@ -363,3 +363,86 @@ influencersRoute.patch('/work/:id', requirePhone, async (c) => {
     return c.json({ error: 'Could not update this job' }, 500);
   }
 });
+
+/* ---------------- Notifications ---------------- */
+
+/** Everything this partner has been told, newest first */
+influencersRoute.get('/notifications', requirePhone, async (c) => {
+  const phone = c.get('phone');
+
+  try {
+    const result = await pool.query(
+      `SELECT n.id, n.assignment_id, n.type, n.title, n.body,
+              n.read_at, n.created_at
+         FROM partner_notifications n
+         JOIN influencers i ON i.id = n.partner_id
+        WHERE i.phone = $1
+        ORDER BY n.created_at DESC
+        LIMIT 100`,
+      [phone]
+    );
+
+    const unread = result.rows.filter((r) => !r.read_at).length;
+
+    return c.json({ notifications: result.rows, unread });
+  } catch (err) {
+    console.error('Failed to load partner notifications:', err);
+    return c.json({ error: 'Could not load notifications' }, 500);
+  }
+});
+
+/** Just the badge number — cheap enough to call whenever Home appears */
+influencersRoute.get('/notifications/count', requirePhone, async (c) => {
+  const phone = c.get('phone');
+
+  try {
+    const result = await pool.query(
+      `SELECT COUNT(*)::int AS unread
+         FROM partner_notifications n
+         JOIN influencers i ON i.id = n.partner_id
+        WHERE i.phone = $1 AND n.read_at IS NULL`,
+      [phone]
+    );
+
+    return c.json({ unread: result.rows[0].unread });
+  } catch {
+    return c.json({ unread: 0 });
+  }
+});
+
+/** Mark one read, or all of them if no id is given */
+influencersRoute.post('/notifications/read', requirePhone, async (c) => {
+  const phone = c.get('phone');
+
+  let body: any = {};
+  try {
+    body = await c.req.json();
+  } catch {
+    // An empty body means "all of them"
+  }
+
+  try {
+    if (body.id) {
+      await pool.query(
+        `UPDATE partner_notifications n
+            SET read_at = now()
+           FROM influencers i
+          WHERE n.partner_id = i.id AND i.phone = $1 AND n.id = $2`,
+        [phone, body.id]
+      );
+    } else {
+      await pool.query(
+        `UPDATE partner_notifications n
+            SET read_at = now()
+           FROM influencers i
+          WHERE n.partner_id = i.id AND i.phone = $1 AND n.read_at IS NULL`,
+        [phone]
+      );
+    }
+
+    return c.json({ success: true });
+  } catch (err) {
+    console.error('Failed to mark read:', err);
+    return c.json({ error: 'Could not update' }, 500);
+  }
+});

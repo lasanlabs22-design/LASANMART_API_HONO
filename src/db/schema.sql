@@ -257,3 +257,26 @@ CREATE INDEX IF NOT EXISTS idx_feedback_partner
 -- survive a reinstall and can be shown in the admin console
 ALTER TABLE contacts ADD COLUMN IF NOT EXISTS photo_url TEXT;
 ALTER TABLE contacts ADD COLUMN IF NOT EXISTS logo_url TEXT;
+
+-- Notifications for Lasan Hub partners. Separate from `notifications`,
+-- which belongs to Lasan Mart customers.
+CREATE TABLE IF NOT EXISTS partner_notifications (
+  id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+  partner_id TEXT NOT NULL REFERENCES influencers(id) ON DELETE CASCADE,
+  assignment_id TEXT REFERENCES request_assignments(id) ON DELETE CASCADE,
+
+  -- work    → a job offered or withdrawn
+  -- profile → approved, rejected, paused
+  type TEXT NOT NULL DEFAULT 'work',
+  title TEXT NOT NULL,
+  body TEXT NOT NULL,
+
+  read_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_partner_notif
+  ON partner_notifications(partner_id, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_partner_notif_unread
+  ON partner_notifications(partner_id) WHERE read_at IS NULL;

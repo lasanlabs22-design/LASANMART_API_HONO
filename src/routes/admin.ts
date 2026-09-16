@@ -3,6 +3,7 @@ import { pool } from '../db/pool.js';
 import { adminAuth } from '../middleware/adminAuth.js';
 import { notifyStatusChange } from '../lib/notifications.js';
 import { deleteVideo } from '../lib/cloudinary.js';
+import { notifyPartner } from '../lib/partnerNotify.js';
 
 export const adminRoute = new Hono();
 
@@ -805,6 +806,24 @@ adminRoute.patch('/influencers/:id', async (c) => {
       return c.json({ error: 'Creator not found' }, 404);
     }
 
+    if (body.status === 'approved') {
+      await notifyPartner(id, {
+        type: 'profile',
+        title: "You're approved",
+        body: "Your profile is live. When a client needs what you offer, we'll send it your way.",
+      });
+    }
+
+    if (body.status === 'rejected') {
+      await notifyPartner(id, {
+        type: 'profile',
+        title: 'We need a few changes',
+        body:
+          body.reviewNote ||
+          'Have a look at your profile and resubmit when you can.',
+      });
+    }
+
     return c.json({ success: true, influencer: result.rows[0] });
   } catch (err) {
     console.error('Failed to update creator:', err);
@@ -1048,6 +1067,22 @@ adminRoute.post('/requests/:id/assign', async (c) => {
         [requestId]
       )
       .catch(() => {});
+
+    // Let them know there's work waiting
+    const req = await pool.query('SELECT details FROM requests WHERE id = $1', [
+      requestId,
+    ]);
+
+    const service = req.rows[0]?.details?.service;
+
+    await notifyPartner(body.partnerId, {
+      assignmentId: result.rows[0].id,
+      type: 'work',
+      title: 'New work for you',
+      body: service
+        ? `A client needs ${service}. Open the Work tab to see the details and accept it.`
+        : 'A client needs your help. Open the Work tab to see the details.',
+    });
 
     return c.json({ success: true, assignment: result.rows[0] }, 201);
   } catch (err) {
