@@ -147,7 +147,19 @@ adminRoute.get('/requests', async (c) => {
           r.status, r.assigned_to, r.assigned_at, r.internal_note,
           r.email_sent, r.created_at,
           c.id AS contact_id, c.name, c.phone, c.email,
-          c.company_name, c.sector, c.city
+          c.company_name, c.sector, c.city,
+          -- Who's doing the work, if anyone
+          (SELECT json_build_object(
+              'partner_name', i2.name,
+              'company_name', i2.company_name,
+              'status', a2.status
+            )
+             FROM request_assignments a2
+             JOIN influencers i2 ON i2.id = a2.partner_id
+            WHERE a2.request_id = r.id
+              AND a2.status IN ('offered','accepted','in_progress','completed')
+            ORDER BY a2.assigned_at DESC
+            LIMIT 1) AS assignment
         FROM requests r
         JOIN contacts c ON c.id = r.contact_id
         ${where}
@@ -183,7 +195,19 @@ adminRoute.get('/requests/:id', async (c) => {
           r.email_sent, r.created_at, r.updated_at,
           c.id AS contact_id, c.name, c.phone, c.email,
           c.company_name, c.company_description, c.sector, c.city,
-          c.created_at AS contact_since
+          c.created_at AS contact_since,
+          -- Who's doing the work, if anyone
+          (SELECT json_build_object(
+              'partner_name', i2.name,
+              'company_name', i2.company_name,
+              'status', a2.status
+            )
+             FROM request_assignments a2
+             JOIN influencers i2 ON i2.id = a2.partner_id
+            WHERE a2.request_id = r.id
+              AND a2.status IN ('offered','accepted','in_progress','completed')
+            ORDER BY a2.assigned_at DESC
+            LIMIT 1) AS assignment
         FROM requests r
         JOIN contacts c ON c.id = r.contact_id
         WHERE r.id = $1`,
@@ -1162,5 +1186,74 @@ adminRoute.patch('/assignments/:id', async (c) => {
   } catch (err) {
     console.error('Failed to update assignment:', err);
     return c.json({ error: 'Could not update' }, 500);
+  }
+});
+
+/**
+ * GET /admin/work
+ * Every live assignment across all requests — the answer to
+ * "what are we actually working on right now?"
+ */
+adminRoute.get('/work', async (c) => {
+  const status = c.req.query('status');
+
+  const conditions: string[] = [];
+  const params: any[] = [];
+
+  if (
+    status &&
+    ['offered', 'accepted', 'in_progress', 'completed'].includes(status)
+  ) {
+    params.push(status);
+    conditions.push(`a.status = $${params.length}`);
+  } else {
+    // Everything still open, by default
+    conditions.push(`a.status IN ('offered','accepted','in_progress')`);
+  }
+
+  const where = `WHERE ${conditions.join(' AND ')}`;
+
+  try {
+    const [list, counts] = await Promise.all([
+      pool.query(
+        `SELECT a.id, a.status, a.brief, a.decline_reason,
+                a.assigned_at, a.responded_at, a.completed_at,
+                r.id AS request_id, r.title, r.type, r.details,
+                c.name AS customer_name, c.phone AS customer_phone,
+                c.city AS customer_city,
+                i.id AS partner_id, i.name AS partner_name,
+                i.company_name, i.phone AS partner_phone,
+                i.photo_url AS partner_photo, i.role AS partner_role,
+                f.verdict, f.comment
+           FROM request_assignments a
+           JOIN requests r ON r.id = a.request_id
+           JOIN contacts c ON c.id = r.contact_id
+           JOIN influencers i ON i.id = a.partner_id
+           LEFT JOIN assignment_feedback f ON f.assignment_id = a.id
+           ${where}
+          ORDER BY
+            CASE a.status WHEN 'offered' THEN 0
+                          WHEN 'in_progress' THEN 1
+                          WHEN 'accepted' THEN 2
+                          ELSE 3 END,
+            a.assigned_at DESC
+          LIMIT 200`,
+        params
+      ),
+      pool.query(`
+        SELECT
+          COUNT(*) FILTER (WHERE status = 'offered')::int AS offered,
+          COUNT(*) FILTER (WHERE status = 'accepted')::int AS accepted,
+          COUNT(*) FILTER (WHERE status = 'in_progress')::int AS in_progress,
+          COUNT(*) FILTER (WHERE status = 'completed')::int AS completed,
+          COUNT(*) FILTER (WHERE status = 'declined')::int AS declined
+        FROM request_assignments
+      `),
+    ]);
+
+    return c.json({ work: list.rows, stats: counts.rows[0] });
+  } catch (err) {
+    console.error('Failed to load work:', err);
+    return c.json({ error: 'Could not load work' }, 500);
   }
 });
