@@ -366,6 +366,18 @@ requestsRoute.post('/:id/feedback', requirePhone, async (c) => {
       ]
     );
 
+    // A happy client is a stronger signal than a manual click, so
+    // close it ourselves. Okay and poor stay open for the team.
+    if (body.verdict === 'good') {
+      await pool
+        .query(
+          `UPDATE requests SET status = 'closed', updated_at = now()
+            WHERE id = $1 AND status != 'closed'`,
+          [id]
+        )
+        .catch(() => {});
+    }
+
     return c.json({ success: true });
   } catch (err) {
     console.error('Failed to save feedback:', err);
