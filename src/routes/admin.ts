@@ -1012,6 +1012,14 @@ adminRoute.get('/requests/:id/assign', async (c) => {
     const service =
       request.details?.service || request.details?.services?.[0] || null;
 
+    /* Which kind of partner can do this. An influencer request names
+       people directly; everything else is matched on services or skills,
+       so listing all three roles just clutters the choice. */
+    const roleFilter =
+      request.type === 'influencer'
+        ? `i.role = 'influencer'`
+        : `i.role IN ('vendor', 'freelancer')`;
+
     // Approved vendors and freelancers, those who offer this exact
     // service/skill first
     const vendors = await pool.query(
@@ -1029,7 +1037,7 @@ adminRoute.get('/requests/:id/assign', async (c) => {
          FROM influencers i
          LEFT JOIN request_assignments a ON a.partner_id = i.id
          LEFT JOIN assignment_feedback f ON f.partner_id = i.id
-        WHERE i.status = 'approved'
+        WHERE i.status = 'approved' AND ${roleFilter}
         GROUP BY i.id
         ORDER BY offers_this DESC, good_jobs DESC, i.created_at DESC`,
       [service]
