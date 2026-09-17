@@ -1023,12 +1023,13 @@ adminRoute.get('/requests/:id/assign', async (c) => {
               COUNT(f.id)::int AS rated_jobs,
               CASE WHEN $1::text IS NULL THEN false
                    WHEN i.role = 'vendor' THEN i.services @> to_jsonb(ARRAY[$1::text])
-                   ELSE i.skills @> to_jsonb(ARRAY[$1::text])
+                   WHEN i.role = 'freelancer' THEN i.skills @> to_jsonb(ARRAY[$1::text])
+                   ELSE i.category = $1::text
               END AS offers_this
          FROM influencers i
          LEFT JOIN request_assignments a ON a.partner_id = i.id
          LEFT JOIN assignment_feedback f ON f.partner_id = i.id
-        WHERE i.role IN ('vendor', 'freelancer') AND i.status = 'approved'
+        WHERE i.status = 'approved'
         GROUP BY i.id
         ORDER BY offers_this DESC, good_jobs DESC, i.created_at DESC`,
       [service]
@@ -1045,9 +1046,19 @@ adminRoute.get('/requests/:id/assign', async (c) => {
       [requestId]
     );
 
+    /* For an influencer request, the customer already chose. Pull their
+       names out of details so the panel can show exactly those people
+       first, rather than a list the team has to match by eye. */
+    const pickedNames: string[] = Array.isArray(request.details?.creators)
+      ? request.details.creators.map((line: string) =>
+          String(line).split('(')[0].split('—')[0].trim()
+        )
+      : [];
+
     return c.json({
       request,
       service,
+      pickedNames,
       vendors: vendors.rows,
       assignments: existing.rows,
     });
