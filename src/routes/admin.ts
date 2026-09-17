@@ -4,6 +4,7 @@ import { adminAuth } from '../middleware/adminAuth.js';
 import { notifyStatusChange } from '../lib/notifications.js';
 import { deleteVideo } from '../lib/cloudinary.js';
 import { notifyPartner } from '../lib/partnerNotify.js';
+import { createNotification } from '../lib/notifications.js';
 
 export const adminRoute = new Hono();
 
@@ -1280,5 +1281,87 @@ adminRoute.get('/work', async (c) => {
   } catch (err) {
     console.error('Failed to load work:', err);
     return c.json({ error: 'Could not load work' }, 500);
+  }
+});
+
+/* ---------------- Lasan Vibes access ---------------- */
+
+/**
+ * GET /admin/vibes-access
+ * Who has asked to post, and who already can.
+ */
+adminRoute.get('/vibes-access', async (c) => {
+  try {
+    const [pending, approved] = await Promise.all([
+      pool.query(
+        `SELECT id, name, phone, email, company_name, sector, city,
+                photo_url, vibes_requested_at, vibes_reason
+           FROM contacts
+          WHERE vibes_requested_at IS NOT NULL AND can_post_vibes = false
+          ORDER BY vibes_requested_at DESC`
+      ),
+      pool.query(
+        `SELECT c.id, c.name, c.phone, c.company_name, c.photo_url,
+                c.vibes_decided_at,
+                COUNT(r.id)::int AS reels_posted
+           FROM contacts c
+           LEFT JOIN reels r ON r.contact_id = c.id
+          WHERE c.can_post_vibes = true
+          GROUP BY c.id
+          ORDER BY c.vibes_decided_at DESC NULLS LAST`
+      ),
+    ]);
+
+    return c.json({ pending: pending.rows, approved: approved.rows });
+  } catch (err) {
+    console.error('Failed to load vibes access:', err);
+    return c.json({ error: 'Could not load requests' }, 500);
+  }
+});
+
+/**
+ * PATCH /admin/vibes-access/:id
+ * Body: { grant: true | false }
+ */
+adminRoute.patch('/vibes-access/:id', async (c) => {
+  const id = c.req.param('id');
+
+  let body: any;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: 'Body must be valid JSON' }, 400);
+  }
+
+  const grant = body.grant === true;
+
+  try {
+    const result = await pool.query(
+      `UPDATE contacts SET
+         can_post_vibes = $1,
+         vibes_decided_at = now(),
+         updated_at = now()
+       WHERE id = $2
+       RETURNING id, name, can_post_vibes`,
+      [grant, id]
+    );
+
+    if (result.rows.length === 0) {
+      return c.json({ error: 'Person not found' }, 404);
+    }
+
+    // Tell them either way — silence is worse than a no
+    await createNotification(id, {
+      type: 'status',
+      title: grant ? 'You can post to Lasan Vibes' : 'About your Vibes request',
+      body: grant
+        ? 'Your request was approved. Open Lasan Vibes and tap the plus to share your first video.'
+        : "We're not able to open posting for this account at the moment. Message our team if you'd like to talk it through.",
+    }).catch(() => {});
+
+    return c.json({ success: true, contact: result.rows[0] });
+  } catch (err) {
+    console.error('Failed to update vibes access:', err);
+    return c.json({ error: 'Could not update' }, 500);
   }
 });

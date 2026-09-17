@@ -86,6 +86,79 @@ reelsRoute.get('/mine', requirePhone, async (c) => {
 });
 
 /**
+ * GET /reels/access
+ * Whether this person may post, and whether they've already asked.
+ * The app calls this to decide what to show.
+ */
+reelsRoute.get('/access', requirePhone, async (c) => {
+  const phone = c.get('phone');
+
+  try {
+    const result = await pool.query(
+      `SELECT can_post_vibes, vibes_requested_at, vibes_decided_at
+         FROM contacts WHERE phone = $1`,
+      [phone]
+    );
+
+    const row = result.rows[0];
+
+    return c.json({
+      canPost: row?.can_post_vibes || false,
+      requested: !!row?.vibes_requested_at,
+      // Asked, answered, and still not allowed — so they were declined
+      declined: !!row?.vibes_decided_at && !row?.can_post_vibes,
+    });
+  } catch (err) {
+    console.error('Failed to check vibes access:', err);
+    return c.json({ canPost: false, requested: false, declined: false });
+  }
+});
+
+/**
+ * POST /reels/access
+ * Body: { reason }
+ * Someone asking to be allowed to post.
+ */
+reelsRoute.post('/access', requirePhone, async (c) => {
+  const phone = c.get('phone');
+
+  let body: any;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: 'Body must be valid JSON' }, 400);
+  }
+
+  const reason = String(body?.reason || '').trim();
+
+  if (reason.length < 10) {
+    return c.json({ error: 'Tell us a little more about what you would post' }, 400);
+  }
+
+  try {
+    const result = await pool.query(
+      `UPDATE contacts SET
+         vibes_requested_at = now(),
+         vibes_reason = $1,
+         vibes_decided_at = NULL,
+         updated_at = now()
+       WHERE phone = $2 AND can_post_vibes = false
+       RETURNING id`,
+      [reason.slice(0, 500), phone]
+    );
+
+    if (result.rows.length === 0) {
+      return c.json({ error: 'You already have access, or no profile yet' }, 400);
+    }
+
+    return c.json({ success: true });
+  } catch (err) {
+    console.error('Failed to request vibes access:', err);
+    return c.json({ error: 'Could not send your request' }, 500);
+  }
+});
+
+/**
  * POST /reels
  * A user posting from the app. The video is already on Cloudinary —
  * the app uploads there directly and sends us the URLs.
@@ -96,6 +169,21 @@ reelsRoute.get('/mine', requirePhone, async (c) => {
  */
 reelsRoute.post('/', requirePhone, async (c) => {
   const phone = c.get('phone');
+
+  // Only people the team has cleared may post
+  try {
+    const access = await pool.query(
+      'SELECT can_post_vibes FROM contacts WHERE phone = $1',
+      [phone]
+    );
+
+    if (!access.rows[0]?.can_post_vibes) {
+      return c.json({ error: 'You do not have posting access yet' }, 403);
+    }
+  } catch (err) {
+    console.error('Failed to check posting access:', err);
+    return c.json({ error: 'Could not post your reel' }, 500);
+  }
 
   let body: any;
 

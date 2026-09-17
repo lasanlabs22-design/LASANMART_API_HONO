@@ -280,3 +280,15 @@ CREATE INDEX IF NOT EXISTS idx_partner_notif
 
 CREATE INDEX IF NOT EXISTS idx_partner_notif_unread
   ON partner_notifications(partner_id) WHERE read_at IS NULL;
+
+  -- Who may post to Lasan Vibes. Off for everyone by default — a person
+-- asks, and the team grants it individually.
+ALTER TABLE contacts ADD COLUMN IF NOT EXISTS can_post_vibes BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE contacts ADD COLUMN IF NOT EXISTS vibes_requested_at TIMESTAMPTZ;
+ALTER TABLE contacts ADD COLUMN IF NOT EXISTS vibes_reason TEXT;
+ALTER TABLE contacts ADD COLUMN IF NOT EXISTS vibes_decided_at TIMESTAMPTZ;
+
+-- The queue of people waiting on an answer
+CREATE INDEX IF NOT EXISTS idx_contacts_vibes_pending
+  ON contacts(vibes_requested_at DESC)
+  WHERE vibes_requested_at IS NOT NULL AND can_post_vibes = false;
