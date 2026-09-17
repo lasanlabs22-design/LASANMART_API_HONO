@@ -446,3 +446,61 @@ influencersRoute.post('/notifications/read', requirePhone, async (c) => {
     return c.json({ error: 'Could not update' }, 500);
   }
 });
+
+/**
+ * GET /influencers/approved
+ *
+ * Public — no token needed. This is the list a business browses in
+ * Lasan Mart, so it deliberately returns only what a customer should
+ * see: no phone, no email, no GST.
+ */
+influencersRoute.get('/approved', async (c) => {
+  const category = c.req.query('category');
+  const city = c.req.query('city');
+
+  const conditions = [`i.role = 'influencer'`, `i.status = 'approved'`];
+  const params: any[] = [];
+
+  if (category) {
+    params.push(category);
+    conditions.push(`i.category = $${params.length}`);
+  }
+
+  if (city) {
+    params.push(city);
+    conditions.push(`i.city ILIKE $${params.length}`);
+  }
+
+  try {
+    const result = await pool.query(
+      `SELECT i.id, i.name, i.photo_url, i.instagram_id,
+              i.followers, i.category, i.city, i.rate_per_post, i.bio
+         FROM influencers i
+        WHERE ${conditions.join(' AND ')}
+        ORDER BY i.rate_per_post ASC NULLS LAST, i.created_at DESC
+        LIMIT 200`,
+      params
+    );
+
+    // The distinct categories and cities we actually have, so the
+    // app's filters only ever show options with results behind them
+    const facets = await pool.query(
+      `SELECT
+          ARRAY(SELECT DISTINCT category FROM influencers
+                 WHERE role = 'influencer' AND status = 'approved'
+                   AND category IS NOT NULL ORDER BY category) AS categories,
+          ARRAY(SELECT DISTINCT city FROM influencers
+                 WHERE role = 'influencer' AND status = 'approved'
+                   AND city IS NOT NULL ORDER BY city) AS cities`
+    );
+
+    return c.json({
+      influencers: result.rows,
+      categories: facets.rows[0]?.categories || [],
+      cities: facets.rows[0]?.cities || [],
+    });
+  } catch (err) {
+    console.error('Failed to load approved influencers:', err);
+    return c.json({ error: 'Could not load creators' }, 500);
+  }
+});
