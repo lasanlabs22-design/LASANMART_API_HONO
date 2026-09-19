@@ -161,12 +161,20 @@ requestsRoute.post('/', requirePhone, async (c) => {
           await client.query('ROLLBACK');
           committed = true; // prevents the catch block rolling back twice
 
+          const existingCreators: string[] = Array.isArray(existing.details?.creators)
+            ? existing.details.creators.map((c: any) => String(c).split(' (')[0].trim())
+            : [];
+          const matchedName = creatorNames.find((n) => existingCreators.includes(n));
+
           return c.json(
             {
               error: 'already_requested',
-              message: 'You already have an open request for this creator.',
+              message: matchedName
+                ? `You already have an open request that includes ${matchedName}.`
+                : 'You already have an open request for this creator.',
               existingRequestId: existing.id,
               existingStatus: existing.status,
+              matchedCreator: matchedName || null,
             },
             409
           );
