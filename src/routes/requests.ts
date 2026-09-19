@@ -130,6 +130,50 @@ requestsRoute.post('/', requirePhone, async (c) => {
       contactId = newContact.rows[0].id;
     }
 
+    // Step 1.5: for influencer requests only, don't create a duplicate
+    // if the same creator is already in an open request from this
+    // contact. "Open" = not closed and not rejected — a resolved
+    // request doesn't block asking again later.
+    if (type === 'influencer' && Array.isArray(body.details?.creators)) {
+      const creatorNames: string[] = body.details.creators
+        .map((c: any) => String(c).split(' (')[0].trim()) // strip "(@handle)"
+        .filter(Boolean);
+
+      if (creatorNames.length > 0) {
+        const dup = await client.query(
+          `SELECT id, status, created_at, details
+             FROM requests
+            WHERE contact_id = $1
+              AND type = 'influencer'
+              AND status NOT IN ('closed', 'rejected')
+            ORDER BY created_at DESC`,
+          [contactId]
+        );
+
+        const existing = dup.rows.find((row) => {
+          const existingCreators: string[] = Array.isArray(row.details?.creators)
+            ? row.details.creators.map((c: any) => String(c).split(' (')[0].trim())
+            : [];
+          return creatorNames.some((n) => existingCreators.includes(n));
+        });
+
+        if (existing) {
+          await client.query('ROLLBACK');
+          committed = true; // prevents the catch block rolling back twice
+
+          return c.json(
+            {
+              error: 'already_requested',
+              message: 'You already have an open request for this creator.',
+              existingRequestId: existing.id,
+              existingStatus: existing.status,
+            },
+            409
+          );
+        }
+      }
+    }
+
     // Step 2: create the request itself, linked to that contact
     const newRequest = await client.query(
       `INSERT INTO requests
