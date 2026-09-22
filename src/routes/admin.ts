@@ -6,6 +6,7 @@ import { deleteVideo } from '../lib/cloudinary.js';
 import { deletablePublicId, fileStillUsed } from '../lib/media.js';
 import { notifyPartner } from '../lib/partnerNotify.js';
 import { createNotification } from '../lib/notifications.js';
+import { pushToContact } from '../lib/push.js';
 
 export const adminRoute = new Hono();
 
@@ -1300,11 +1301,20 @@ adminRoute.get('/vibes-access', async (c) => {
   try {
     const [pending, approved] = await Promise.all([
       pool.query(
-        `SELECT id, name, phone, email, company_name, sector, city,
-                photo_url, vibes_requested_at, vibes_reason
-           FROM contacts
-          WHERE vibes_requested_at IS NOT NULL AND can_post_vibes = false
-          ORDER BY vibes_requested_at DESC`
+        // Plus what the team weighs up: how long we've known them,
+        // what they've asked us for, and whether posts were pulled before
+        `SELECT c.id, c.name, c.phone, c.email, c.company_name, c.sector, c.city,
+                c.photo_url, c.vibes_requested_at, c.vibes_reason,
+                c.created_at AS contact_since,
+                (SELECT COUNT(*)::int FROM requests r
+                  WHERE r.contact_id = c.id) AS requests_total,
+                (SELECT COUNT(*)::int FROM requests r
+                  WHERE r.contact_id = c.id AND r.status = 'closed') AS requests_closed,
+                (SELECT COUNT(*)::int FROM reels rl
+                  WHERE rl.contact_id = c.id AND rl.status = 'hidden') AS reels_hidden
+           FROM contacts c
+          WHERE c.vibes_requested_at IS NOT NULL AND c.can_post_vibes = false
+          ORDER BY c.vibes_requested_at DESC`
       ),
       pool.query(
         `SELECT c.id, c.name, c.phone, c.company_name, c.photo_url,
@@ -1356,16 +1366,30 @@ adminRoute.patch('/vibes-access/:id', async (c) => {
       return c.json({ error: 'Person not found' }, 404);
     }
 
-    // Tell them either way — silence is worse than a no
-    await createNotification(id, {
-      type: 'status',
-      title: grant ? 'You can post to Lasan Vibes' : 'About your Vibes request',
-      body: grant
-        ? 'Your request was approved. Open Lasan Vibes and tap the plus to share your first video.'
-        : "We're not able to open posting for this account at the moment. Message our team if you'd like to talk it through.",
-    }).catch(() => {});
+    // Taking access away can also take their posts down — only when
+    // the console asks, since not every revoke is about the content
+    let reelsHidden = 0;
+    if (!grant && body.hideReels === true) {
+      const hidden = await pool.query(
+        `UPDATE reels SET status = 'hidden', updated_at = now()
+          WHERE contact_id = $1 AND status = 'live'`,
+        [id]
+      );
+      reelsHidden = hidden.rowCount || 0;
+    }
 
-    return c.json({ success: true, contact: result.rows[0] });
+    // Tell them either way — silence is worse than a no
+    const title = grant ? 'You can post to Lasan Vibes' : 'About your Vibes request';
+    const message = grant
+      ? 'Your request was approved. Open Lasan Vibes and tap the plus to share your first video.'
+      : "We're not able to open posting for this account at the moment. Message our team if you'd like to talk it through.";
+
+    await createNotification(id, { type: 'status', title, body: message }).catch(
+      () => {}
+    );
+    await pushToContact(id, title, message, { type: 'vibes' });
+
+    return c.json({ success: true, contact: result.rows[0], reelsHidden });
   } catch (err) {
     console.error('Failed to update vibes access:', err);
     return c.json({ error: 'Could not update' }, 500);
