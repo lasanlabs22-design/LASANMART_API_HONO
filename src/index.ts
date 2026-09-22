@@ -9,6 +9,7 @@ import { reelsRoute } from './routes/reels.js';
 import { adminRoute } from './routes/admin.js';
 import { influencersRoute } from './routes/influencers.js';
 import { uploadsRoute } from './routes/uploads.js';
+import { accountRoute } from './routes/account.js';
 
 const app = new Hono();
 
@@ -60,6 +61,7 @@ app.route('/notifications', notificationsRoute);
 app.route('/reels', reelsRoute);
 app.route('/influencers', influencersRoute);
 app.route('/uploads', uploadsRoute);
+app.route('/account', accountRoute);
 
 /* ---------- Team-facing (used by the admin console) ---------- */
 app.route('/admin', adminRoute);

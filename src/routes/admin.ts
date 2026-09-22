@@ -3,7 +3,7 @@ import { pool } from '../db/pool.js';
 import { adminAuth } from '../middleware/adminAuth.js';
 import { notifyStatusChange } from '../lib/notifications.js';
 import { deleteVideo } from '../lib/cloudinary.js';
-import { deletablePublicId, fileStillUsed } from '../lib/media.js';
+import { deleteContactData } from '../lib/contactDeletion.js';
 import { notifyPartner } from '../lib/partnerNotify.js';
 import { createNotification } from '../lib/notifications.js';
 import { pushToContact } from '../lib/push.js';
@@ -618,10 +618,8 @@ adminRoute.delete('/contacts/:id', async (c) => {
   const id = c.req.param('id');
   const confirm = (c.req.query('confirm') || '').replace(/\D/g, '');
 
-  const client = await pool.connect();
-
   try {
-    const existing = await client.query(
+    const existing = await pool.query(
       'SELECT phone, name FROM contacts WHERE id = $1',
       [id]
     );
@@ -639,36 +637,7 @@ adminRoute.delete('/contacts/:id', async (c) => {
       );
     }
 
-    // Collect the Cloudinary ids before the rows disappear
-    const reels = await client.query(
-      'SELECT public_id, video_url FROM reels WHERE contact_id = $1',
-      [id]
-    );
-
-    await client.query('BEGIN');
-
-    // Order matters where foreign keys don't cascade
-    await client.query('DELETE FROM reel_likes WHERE contact_id = $1', [id]);
-    await client.query('DELETE FROM notifications WHERE contact_id = $1', [id]);
-    await client.query('DELETE FROM reels WHERE contact_id = $1', [id]);
-    await client.query('DELETE FROM requests WHERE contact_id = $1', [id]);
-    await client.query('DELETE FROM contacts WHERE id = $1', [id]);
-
-    await client.query('COMMIT');
-
-    // Free the video files. Done after the commit — a stray file is
-    // better than a half-finished deletion.
-    let filesRemoved = 0;
-    for (const row of reels.rows) {
-      // Only each reel's own file, and only if nothing else plays it —
-      // older rows may carry an id the user typed in themselves
-      const publicId = deletablePublicId(row);
-      if (!publicId || (await fileStillUsed(publicId))) continue;
-
-      if (await deleteVideo(publicId)) {
-        filesRemoved += 1;
-      }
-    }
+    const filesRemoved = await deleteContactData(id);
 
     console.log(
       `Deleted all data for ${name} (${phone}); ${filesRemoved} video(s) removed`
@@ -676,11 +645,8 @@ adminRoute.delete('/contacts/:id', async (c) => {
 
     return c.json({ success: true, filesRemoved });
   } catch (err) {
-    await client.query('ROLLBACK').catch(() => {});
     console.error('Failed to delete contact:', err);
     return c.json({ error: 'Could not delete this contact' }, 500);
-  } finally {
-    client.release();
   }
 });
 
