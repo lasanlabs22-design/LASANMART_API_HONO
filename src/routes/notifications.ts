@@ -160,3 +160,25 @@ notificationsRoute.post('/token', requirePhone, rateLimit('push-token', 30, HOUR
     return c.json({ error: 'Could not register for notifications' }, 500);
   }
 });
+
+/**
+ * DELETE /notifications/token
+ * Called on logout, so this phone stops receiving pushes about
+ * someone who is no longer signed in on it.
+ */
+notificationsRoute.delete('/token', requirePhone, async (c) => {
+  const phone = c.get('phone');
+
+  try {
+    await pool.query(
+      `UPDATE contacts SET push_token = NULL, push_updated_at = now()
+        WHERE phone = $1`,
+      [phone]
+    );
+
+    return c.json({ success: true });
+  } catch (err) {
+    console.error('Failed to clear push token:', err);
+    return c.json({ error: 'Could not update notifications' }, 500);
+  }
+});
