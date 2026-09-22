@@ -3,6 +3,7 @@ import { pool } from '../db/pool.js';
 import { adminAuth } from '../middleware/adminAuth.js';
 import { notifyStatusChange } from '../lib/notifications.js';
 import { deleteVideo } from '../lib/cloudinary.js';
+import { deletablePublicId, fileStillUsed } from '../lib/media.js';
 import { notifyPartner } from '../lib/partnerNotify.js';
 import { createNotification } from '../lib/notifications.js';
 
@@ -639,7 +640,7 @@ adminRoute.delete('/contacts/:id', async (c) => {
 
     // Collect the Cloudinary ids before the rows disappear
     const reels = await client.query(
-      'SELECT public_id FROM reels WHERE contact_id = $1',
+      'SELECT public_id, video_url FROM reels WHERE contact_id = $1',
       [id]
     );
 
@@ -658,7 +659,12 @@ adminRoute.delete('/contacts/:id', async (c) => {
     // better than a half-finished deletion.
     let filesRemoved = 0;
     for (const row of reels.rows) {
-      if (row.public_id && (await deleteVideo(row.public_id))) {
+      // Only each reel's own file, and only if nothing else plays it —
+      // older rows may carry an id the user typed in themselves
+      const publicId = deletablePublicId(row);
+      if (!publicId || (await fileStillUsed(publicId))) continue;
+
+      if (await deleteVideo(publicId)) {
         filesRemoved += 1;
       }
     }
