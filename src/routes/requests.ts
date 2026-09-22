@@ -305,9 +305,18 @@ requestsRoute.get('/contact', requirePhone, async (c) => {
   }
 });
 
+/** Trimmed and capped, or null when empty — so COALESCE keeps what we have */
+function text(value: unknown, max: number): string | null {
+  const s = typeof value === 'string' ? value.trim() : '';
+  return s ? s.slice(0, max) : null;
+}
+
 /**
  * POST /requests/contact
- * Saves profile details that aren't tied to a request — photos, mainly.
+ * Saves profile details that aren't tied to a request — the photos,
+ * and whatever someone edits on their My Account screen.
+ *
+ * Every field is optional; anything left out keeps its saved value.
  */
 requestsRoute.post('/contact', requirePhone, rateLimit('contact', 30, HOUR), async (c) => {
   const phone = c.get('phone');
@@ -319,21 +328,56 @@ requestsRoute.post('/contact', requirePhone, rateLimit('contact', 30, HOUR), asy
     return c.json({ error: 'Body must be valid JSON' }, 400);
   }
 
+  const name = text(body.name, 100);
+  const email = text(body.email, 200)?.toLowerCase() ?? null;
+
+  if (email && !isValidEmail(email)) {
+    return c.json({ error: 'Email is not valid' }, 400);
+  }
+
+  const values = [
+    // Anything that isn't our Cloudinary (or a Google account photo)
+    // is dropped — the console shows these, so they must be ours
+    isAllowedPhotoUrl(body.photoUrl) ? body.photoUrl : null,
+    isAllowedPhotoUrl(body.logoUrl) ? body.logoUrl : null,
+    name && name.length >= 2 ? name : null,
+    email,
+    text(body.companyName, 150),
+    text(body.companyDescription, 1000),
+    text(body.sector, 100),
+    text(body.city, 200),
+    phone,
+  ];
+
   try {
-    await pool.query(
+    const updated = await pool.query(
       `UPDATE contacts SET
          photo_url = COALESCE($1, photo_url),
          logo_url = COALESCE($2, logo_url),
+         name = COALESCE($3, name),
+         email = COALESCE($4, email),
+         company_name = COALESCE($5, company_name),
+         company_description = COALESCE($6, company_description),
+         sector = COALESCE($7, sector),
+         city = COALESCE($8, city),
          updated_at = now()
-       WHERE phone = $3`,
-      // Anything that isn't our Cloudinary (or a Google account photo)
-      // is dropped — the console shows these, so they must be ours
-      [
-        isAllowedPhotoUrl(body.photoUrl) ? body.photoUrl : null,
-        isAllowedPhotoUrl(body.logoUrl) ? body.logoUrl : null,
-        phone,
-      ]
+       WHERE phone = $9
+       RETURNING id`,
+      values
     );
+
+    // Not known to us yet — start a contact, as long as there's a name
+    // to file it under (the same rule as a first request)
+    if (updated.rows.length === 0 && values[2]) {
+      await pool.query(
+        `INSERT INTO contacts
+           (photo_url, logo_url, name, email, company_name,
+            company_description, sector, city, phone)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+         ON CONFLICT (phone) DO NOTHING`,
+        values
+      );
+    }
 
     return c.json({ success: true });
   } catch (err) {
