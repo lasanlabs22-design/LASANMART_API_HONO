@@ -238,6 +238,12 @@ reelsRoute.post('/', requirePhone, rateLimit('reel-post', 20, HOUR), async (c) =
 
     const { id: contactId, name } = contact.rows[0];
 
+    // Signed uploads land in reels/<contactId>/ — anything in that
+    // folder tree must be in the poster's own folder
+    if (publicId?.startsWith('reels/') && !publicId.startsWith(`reels/${contactId}/`)) {
+      return c.json({ error: 'A valid video URL is required' }, 400);
+    }
+
     // One file, one reel — otherwise someone could re-post another
     // person's video and then delete "their" copy
     const taken = await pool.query(
