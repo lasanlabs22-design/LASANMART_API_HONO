@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { pool } from '../db/pool.js';
 import { requirePhone } from '../middleware/requirePhone.js';
+import { rateLimit, HOUR } from '../lib/rateLimit.js';
 
 export const notificationsRoute = new Hono<{ Variables: { phone: string } }>();
 
@@ -115,7 +116,7 @@ notificationsRoute.post('/read', requirePhone, async (c) => {
  * be registered against the number that's actually signed in, or
  * anyone could redirect someone else's notifications to their own phone.
  */
-notificationsRoute.post('/token', requirePhone, async (c) => {
+notificationsRoute.post('/token', requirePhone, rateLimit('push-token', 30, HOUR), async (c) => {
   const phone = c.get('phone');
 
   let body: any;

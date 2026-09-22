@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { serve } from '@hono/node-server';
 import { cors } from 'hono/cors';
+import { bodyLimit } from 'hono/body-limit';
 import { config } from './config.js';
 import { requestsRoute } from './routes/requests.js';
 import { notificationsRoute } from './routes/notifications.js';
@@ -40,18 +41,26 @@ app.get('/', (c) => {
   });
 });
 
+/**
+ * Nothing we accept is bigger than a form of text — media goes straight
+ * to Cloudinary. A cap stops anyone filling the database with junk.
+ */
+app.use(
+  '*',
+  bodyLimit({
+    maxSize: 256 * 1024,
+    onError: (c) => c.json({ error: 'Request is too large' }, 413),
+  })
+);
+
 /* ---------- Customer-facing (used by the mobile app) ---------- */
 app.route('/requests', requestsRoute);
 app.route('/notifications', notificationsRoute);
 app.route('/reels', reelsRoute);
+app.route('/influencers', influencersRoute);
 
 /* ---------- Team-facing (used by the admin console) ---------- */
 app.route('/admin', adminRoute);
-
-app.route('/requests', requestsRoute);
-app.route('/notifications', notificationsRoute);
-app.route('/reels', reelsRoute);
-app.route('/influencers', influencersRoute);
 
 serve({ fetch: app.fetch, port: config.port }, (info) => {
   console.log(`Lasan Mart API running on http://localhost:${info.port}`);

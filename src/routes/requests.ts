@@ -3,6 +3,7 @@ import { pool } from '../db/pool.js';
 import { sendRequestNotification } from '../email/notify.js';
 import { notifyFirstRequest } from '../lib/notifications.js';
 import { requirePhone } from '../middleware/requirePhone.js';
+import { rateLimit, HOUR } from '../lib/rateLimit.js';
 
 export const requestsRoute = new Hono<{ Variables: { phone: string } }>();
 
@@ -33,7 +34,7 @@ function isValidEmail(value: string): boolean {
  *   details?: object             // type-specific extra data
  * }
  */
-requestsRoute.post('/', requirePhone, async (c) => {
+requestsRoute.post('/', requirePhone, rateLimit('request', 20, HOUR), async (c) => {
   // The number is verified, so we ignore whatever the body claims
   const phone = c.get('phone');
 
@@ -307,7 +308,7 @@ requestsRoute.get('/contact', requirePhone, async (c) => {
  * POST /requests/contact
  * Saves profile details that aren't tied to a request — photos, mainly.
  */
-requestsRoute.post('/contact', requirePhone, async (c) => {
+requestsRoute.post('/contact', requirePhone, rateLimit('contact', 30, HOUR), async (c) => {
   const phone = c.get('phone');
 
   let body: any;
@@ -373,7 +374,7 @@ requestsRoute.get('/:id/progress', requirePhone, async (c) => {
  * Deliberately three answers rather than five stars — everyone gives
  * five, and a compressed scale tells us nothing. Kept internal.
  */
-requestsRoute.post('/:id/feedback', requirePhone, async (c) => {
+requestsRoute.post('/:id/feedback', requirePhone, rateLimit('feedback', 30, HOUR), async (c) => {
   const id = c.req.param('id');
   const phone = c.get('phone');
 

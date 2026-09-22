@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { pool } from '../db/pool.js';
 import { requirePhone } from '../middleware/requirePhone.js';
+import { rateLimit, HOUR } from '../lib/rateLimit.js';
 import { createNotification } from '../lib/notifications.js';
 
 export const influencersRoute = new Hono<{ Variables: { phone: string } }>();
@@ -49,7 +50,7 @@ influencersRoute.get('/me', requirePhone, async (c) => {
  * Editing an approved profile sends it back to pending, so nobody gets
  * approved on modest rates and then quietly changes them.
  */
-influencersRoute.post('/', requirePhone, async (c) => {
+influencersRoute.post('/', requirePhone, rateLimit('partner-profile', 20, HOUR), async (c) => {
   const phone = c.get('phone');
 
   let body: any;
@@ -191,7 +192,7 @@ influencersRoute.get('/requests', requirePhone, async (c) => {
  * POST /influencers/requests
  * A partner raising something with our team.
  */
-influencersRoute.post('/requests', requirePhone, async (c) => {
+influencersRoute.post('/requests', requirePhone, rateLimit('partner-request', 20, HOUR), async (c) => {
   const phone = c.get('phone');
 
   let body: any;
