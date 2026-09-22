@@ -3,6 +3,7 @@ import { pool } from '../db/pool.js';
 import { sendRequestNotification } from '../email/notify.js';
 import { notifyFirstRequest } from '../lib/notifications.js';
 import { requirePhone } from '../middleware/requirePhone.js';
+import { isAllowedPhotoUrl } from '../lib/media.js';
 import { rateLimit, HOUR } from '../lib/rateLimit.js';
 
 export const requestsRoute = new Hono<{ Variables: { phone: string } }>();
@@ -325,7 +326,13 @@ requestsRoute.post('/contact', requirePhone, rateLimit('contact', 30, HOUR), asy
          logo_url = COALESCE($2, logo_url),
          updated_at = now()
        WHERE phone = $3`,
-      [body.photoUrl || null, body.logoUrl || null, phone]
+      // Anything that isn't our Cloudinary (or a Google account photo)
+      // is dropped — the console shows these, so they must be ours
+      [
+        isAllowedPhotoUrl(body.photoUrl) ? body.photoUrl : null,
+        isAllowedPhotoUrl(body.logoUrl) ? body.logoUrl : null,
+        phone,
+      ]
     );
 
     return c.json({ success: true });
