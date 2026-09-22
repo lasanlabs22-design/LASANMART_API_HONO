@@ -13,6 +13,9 @@ import {
 
 export const reelsRoute = new Hono<{ Variables: { phone: string } }>();
 
+/** How long after a decision someone must wait to ask again */
+const REAPPLY_AFTER_MS = 7 * 24 * 60 * 60 * 1000;
+
 /**
  * GET /reels
  * The feed. Public, but if a valid token is present we also mark
@@ -143,20 +146,67 @@ reelsRoute.post('/access', requirePhone, rateLimit('vibes-access', 5, HOUR), asy
   }
 
   try {
-    const result = await pool.query(
+    const existing = await pool.query(
+      'SELECT id, can_post_vibes, vibes_decided_at FROM contacts WHERE phone = $1',
+      [phone]
+    );
+    const row = existing.rows[0];
+
+    if (row?.can_post_vibes) {
+      return c.json({ error: 'You can already post to Vibes' }, 400);
+    }
+
+    // A "no" stands for a while — otherwise the same person goes
+    // straight back to the top of the team's queue
+    if (
+      row?.vibes_decided_at &&
+      Date.now() - new Date(row.vibes_decided_at).getTime() < REAPPLY_AFTER_MS
+    ) {
+      return c.json(
+        {
+          error:
+            'Your last request was reviewed recently. You can ask again a week after that decision.',
+        },
+        429
+      );
+    }
+
+    if (!row) {
+      // Verified, but never sent us anything yet — so there is no
+      // contact to attach the request to. Newer apps send the name
+      // they already hold, which is enough to start one.
+      const name = String(body?.name || '').trim();
+
+      if (name.length < 2) {
+        return c.json(
+          { error: 'Add your name in My Account first, then ask again.' },
+          400
+        );
+      }
+
+      await pool.query(
+        `INSERT INTO contacts (name, phone, vibes_requested_at, vibes_reason)
+         VALUES ($1, $2, now(), $3)
+         ON CONFLICT (phone) DO UPDATE SET
+           vibes_requested_at = now(),
+           vibes_reason = EXCLUDED.vibes_reason,
+           vibes_decided_at = NULL,
+           updated_at = now()`,
+        [name.slice(0, 100), phone, reason.slice(0, 500)]
+      );
+
+      return c.json({ success: true });
+    }
+
+    await pool.query(
       `UPDATE contacts SET
          vibes_requested_at = now(),
          vibes_reason = $1,
          vibes_decided_at = NULL,
          updated_at = now()
-       WHERE phone = $2 AND can_post_vibes = false
-       RETURNING id`,
-      [reason.slice(0, 500), phone]
+       WHERE id = $2`,
+      [reason.slice(0, 500), row.id]
     );
-
-    if (result.rows.length === 0) {
-      return c.json({ error: 'You already have access, or no profile yet' }, 400);
-    }
 
     return c.json({ success: true });
   } catch (err) {
