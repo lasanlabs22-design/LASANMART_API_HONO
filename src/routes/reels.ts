@@ -4,6 +4,12 @@ import { requirePhone } from '../middleware/requirePhone.js';
 import { rateLimit, HOUR, MINUTE } from '../lib/rateLimit.js';
 import { verifiedPhoneFrom } from '../lib/firebase.js';
 import { deleteVideo } from '../lib/cloudinary.js';
+import {
+  isOwnMedia,
+  publicIdFromUrl,
+  deletablePublicId,
+  fileStillUsed,
+} from '../lib/media.js';
 
 export const reelsRoute = new Hono<{ Variables: { phone: string } }>();
 
@@ -196,9 +202,25 @@ reelsRoute.post('/', requirePhone, rateLimit('reel-post', 20, HOUR), async (c) =
 
   const videoUrl = String(body.videoUrl || '').trim();
 
-  if (!videoUrl.startsWith('http')) {
+  // Must be a file in our own Cloudinary account — never a link to
+  // somewhere else
+  if (!isOwnMedia(videoUrl, 'video')) {
     return c.json({ error: 'A valid video URL is required' }, 400);
   }
+
+  // Worked out from the URL, never taken from the body: this id is
+  // what gets deleted later, so it must be this reel's own file
+  const publicId = publicIdFromUrl(videoUrl, 'video');
+
+  // Cloudinary serves a thumbnail from the video path, so either
+  // kind of our own URL is fine
+  const thumbnailUrl =
+    isOwnMedia(body.thumbnailUrl, 'video') ||
+    isOwnMedia(body.thumbnailUrl, 'image')
+      ? body.thumbnailUrl
+      : null;
+
+  const duration = Number(body.duration);
 
   try {
     // We only accept reels from people we already know
@@ -215,6 +237,17 @@ reelsRoute.post('/', requirePhone, rateLimit('reel-post', 20, HOUR), async (c) =
     }
 
     const { id: contactId, name } = contact.rows[0];
+
+    // One file, one reel — otherwise someone could re-post another
+    // person's video and then delete "their" copy
+    const taken = await pool.query(
+      'SELECT 1 FROM reels WHERE public_id = $1 OR video_url = $2 LIMIT 1',
+      [publicId, videoUrl]
+    );
+
+    if (taken.rows.length > 0) {
+      return c.json({ error: 'This video has already been posted' }, 409);
+    }
 
     // A readable handle from their name: "Aaron Kumar" -> "@aaron_kumar"
     const username =
@@ -234,9 +267,9 @@ reelsRoute.post('/', requirePhone, rateLimit('reel-post', 20, HOUR), async (c) =
        RETURNING id, video_url, thumbnail_url, caption, username, created_at`,
       [
         videoUrl,
-        body.thumbnailUrl || null,
-        body.publicId || null,
-        body.duration || null,
+        thumbnailUrl,
+        publicId,
+        Number.isFinite(duration) && duration > 0 ? duration : null,
         body.caption ? String(body.caption).trim().slice(0, 300) : null,
         username,
         contactId,
@@ -399,7 +432,7 @@ reelsRoute.delete('/:id', requirePhone, async (c) => {
   try {
     // Fetch and check ownership in one query
     const existing = await pool.query(
-      `SELECT r.public_id
+      `SELECT r.public_id, r.video_url
          FROM reels r
          JOIN contacts c ON c.id = r.contact_id
         WHERE r.id = $1 AND c.phone = $2`,
@@ -410,13 +443,14 @@ reelsRoute.delete('/:id', requirePhone, async (c) => {
       return c.json({ error: 'Reel not found' }, 404);
     }
 
-    const publicId = existing.rows[0].public_id;
+    const publicId = deletablePublicId(existing.rows[0]);
 
     await pool.query('DELETE FROM reels WHERE id = $1', [reelId]);
 
-    // Free the storage. A stray file is better than a reel
-    // that refuses to disappear from the app.
-    if (publicId) {
+    // Free the storage — but only this reel's own file, and only if
+    // no other reel still plays it. A stray file is better than a
+    // reel that refuses to disappear from the app.
+    if (publicId && !(await fileStillUsed(publicId))) {
       await deleteVideo(publicId);
     }
 
