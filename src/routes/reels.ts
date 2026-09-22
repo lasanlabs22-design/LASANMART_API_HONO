@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { pool } from '../db/pool.js';
 import { requirePhone } from '../middleware/requirePhone.js';
+import { rateLimit, HOUR, MINUTE } from '../lib/rateLimit.js';
 import { verifiedPhoneFrom } from '../lib/firebase.js';
 import { deleteVideo } from '../lib/cloudinary.js';
 
@@ -119,7 +120,7 @@ reelsRoute.get('/access', requirePhone, async (c) => {
  * Body: { reason }
  * Someone asking to be allowed to post.
  */
-reelsRoute.post('/access', requirePhone, async (c) => {
+reelsRoute.post('/access', requirePhone, rateLimit('vibes-access', 5, HOUR), async (c) => {
   const phone = c.get('phone');
 
   let body: any;
@@ -167,7 +168,7 @@ reelsRoute.post('/access', requirePhone, async (c) => {
  * The poster's identity comes from the token, so nobody can post
  * a reel under someone else's name.
  */
-reelsRoute.post('/', requirePhone, async (c) => {
+reelsRoute.post('/', requirePhone, rateLimit('reel-post', 20, HOUR), async (c) => {
   const phone = c.get('phone');
 
   // Only people the team has cleared may post
@@ -254,7 +255,7 @@ reelsRoute.post('/', requirePhone, async (c) => {
  * Bumps the view counter. Fire-and-forget from the app, and
  * deliberately open — counting views needs no identity.
  */
-reelsRoute.post('/:id/view', async (c) => {
+reelsRoute.post('/:id/view', rateLimit('reel-view', 300, MINUTE), async (c) => {
   const id = c.req.param('id');
 
   try {
@@ -273,7 +274,7 @@ reelsRoute.post('/:id/view', async (c) => {
  * POST /reels/:id/like
  * Toggles a like. Returns the new state and count.
  */
-reelsRoute.post('/:id/like', requirePhone, async (c) => {
+reelsRoute.post('/:id/like', requirePhone, rateLimit('reel-like', 120, MINUTE), async (c) => {
   const reelId = c.req.param('id');
   const phone = c.get('phone');
 
