@@ -1,9 +1,16 @@
 import { Hono } from 'hono';
 import { pool } from '../db/pool.js';
 import { requirePhone } from '../middleware/requirePhone.js';
-import { rateLimit, HOUR, MINUTE } from '../lib/rateLimit.js';
+import { rateLimit, clientIp, HOUR, MINUTE } from '../lib/rateLimit.js';
 import { verifiedPhoneFrom } from '../lib/firebase.js';
 import { deleteVideo } from '../lib/cloudinary.js';
+import {
+  ensureReportsTable,
+  REPORT_REASONS,
+  type ReportReason,
+  AUTO_HIDE_AFTER,
+} from '../lib/reelReports.js';
+import { sendReelReport } from '../email/report.js';
 import {
   isOwnMedia,
   publicIdFromUrl,
@@ -430,6 +437,99 @@ reelsRoute.post('/:id/like', requirePhone, rateLimit('reel-like', 120, MINUTE), 
     return c.json({ error: 'Could not update like' }, 500);
   } finally {
     client.release();
+  }
+});
+
+/**
+ * POST /reels/:id/report
+ * Body: { reason, details? }
+ *
+ * Anyone watching can flag a reel — signed out too, since the feed is
+ * public. The team is emailed every time, and a user's reel comes down
+ * on its own once enough different people have reported it.
+ */
+reelsRoute.post('/:id/report', rateLimit('reel-report', 20, HOUR), async (c) => {
+  const reelId = c.req.param('id');
+
+  let body: any;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: 'Body must be valid JSON' }, 400);
+  }
+
+  const reason: ReportReason = REPORT_REASONS.includes(body?.reason)
+    ? body.reason
+    : 'other';
+  const details = body?.details
+    ? String(body.details).trim().slice(0, 500) || null
+    : null;
+
+  // One report per person per reel. A verified number when we have
+  // one; otherwise the address, which is the best a guest offers.
+  const phone = await verifiedPhoneFrom(c.req.header('Authorization'));
+  const reporter = phone ? `phone:${phone}` : `ip:${clientIp(c)}`;
+
+  try {
+    await ensureReportsTable();
+
+    const reel = await pool.query(
+      'SELECT id, video_url, caption, username, source, status FROM reels WHERE id = $1',
+      [reelId]
+    );
+
+    if (reel.rows.length === 0) {
+      return c.json({ error: 'Reel not found' }, 404);
+    }
+
+    const inserted = await pool.query(
+      `INSERT INTO reel_reports (reel_id, reporter, reason, details)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (reel_id, reporter) DO NOTHING
+       RETURNING id`,
+      [reelId, reporter, reason, details]
+    );
+
+    // Already reported by this person — thank them, but don't email
+    // the team or count it again
+    if (inserted.rows.length === 0) {
+      return c.json({ success: true });
+    }
+
+    const count = await pool.query(
+      'SELECT COUNT(*)::int AS n FROM reel_reports WHERE reel_id = $1',
+      [reelId]
+    );
+    const reportCount = count.rows[0].n;
+    const row = reel.rows[0];
+
+    // Only people's own posts come down automatically — the team's
+    // reels are reviewed by hand, so a pile-on can't remove them
+    let autoHidden = false;
+    if (row.source === 'user' && row.status === 'live' && reportCount >= AUTO_HIDE_AFTER) {
+      await pool.query(
+        `UPDATE reels SET status = 'hidden', updated_at = now() WHERE id = $1`,
+        [reelId]
+      );
+      autoHidden = true;
+    }
+
+    // The report is saved either way; a failed email is logged, not fatal
+    await sendReelReport({
+      reelId,
+      videoUrl: row.video_url,
+      caption: row.caption,
+      username: row.username,
+      reason,
+      details,
+      reportCount,
+      autoHidden,
+    }).catch((err) => console.error('Could not email reel report:', err));
+
+    return c.json({ success: true });
+  } catch (err) {
+    console.error('Failed to report reel:', err);
+    return c.json({ error: 'Could not send your report' }, 500);
   }
 });
 

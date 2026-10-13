@@ -1,6 +1,7 @@
 import { pool } from '../db/pool.js';
 import { deleteVideo } from './cloudinary.js';
 import { deletablePublicId, fileStillUsed } from './media.js';
+import { ensureReportsTable } from './reelReports.js';
 
 /**
  * Removes everything we hold about one contact. Irreversible.
@@ -23,7 +24,20 @@ export async function deleteContactData(contactId: string): Promise<number> {
       )
     ).rows;
 
+    const phone = (
+      await client.query('SELECT phone FROM contacts WHERE id = $1', [contactId])
+    ).rows[0]?.phone;
+
+    await ensureReportsTable();
+
     await client.query('BEGIN');
+
+    // Reports they filed carry their number, so those go too
+    if (phone) {
+      await client.query('DELETE FROM reel_reports WHERE reporter = $1', [
+        `phone:${phone}`,
+      ]);
+    }
 
     // Order matters where foreign keys don't cascade
     await client.query('DELETE FROM reel_likes WHERE contact_id = $1', [contactId]);
