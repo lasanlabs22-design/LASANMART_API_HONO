@@ -7,7 +7,7 @@ import { deleteContactData } from '../lib/contactDeletion.js';
 import { notifyPartner } from '../lib/partnerNotify.js';
 import { createNotification } from '../lib/notifications.js';
 import { pushToContact } from '../lib/push.js';
-import { ensureReportsTable } from '../lib/reelReports.js';
+import { ensureReportsTable, OPEN_REPORT } from '../lib/reelReports.js';
 import { signedUpload } from '../lib/uploadSignature.js';
 
 export const adminRoute = new Hono();
@@ -397,7 +397,7 @@ adminRoute.get('/reels', async (c) => {
               r.duration, r.view_count, r.sort_order, r.created_at,
               c.name AS contact_name, c.phone AS contact_phone,
               (SELECT COUNT(*)::int FROM reel_reports rr
-                WHERE rr.reel_id = r.id) AS report_count
+                WHERE rr.reel_id = r.id AND rr.${OPEN_REPORT}) AS report_count
          FROM reels r
          LEFT JOIN contacts c ON c.id = r.contact_id
         ORDER BY r.sort_order DESC, r.created_at DESC
@@ -473,6 +473,44 @@ adminRoute.post('/reels', async (c) => {
   } catch (err) {
     console.error('Failed to create reel:', err);
     return c.json({ error: 'Could not save the reel' }, 500);
+  }
+});
+
+/**
+ * POST /admin/reels/:id/reports/dismiss
+ * The team looked at a reported reel and it's fine: clear its open
+ * reports and put it back in the feed if reports had hidden it.
+ *
+ * Reports are marked, not deleted, so the people who flagged it can't
+ * flag it again — it only returns to review if someone new reports it.
+ */
+adminRoute.post('/reels/:id/reports/dismiss', async (c) => {
+  const id = c.req.param('id');
+
+  try {
+    await ensureReportsTable();
+
+    const reel = await pool.query(
+      `UPDATE reels SET status = 'live', updated_at = now()
+        WHERE id = $1
+        RETURNING id, status`,
+      [id]
+    );
+
+    if (reel.rows.length === 0) {
+      return c.json({ error: 'Reel not found' }, 404);
+    }
+
+    const cleared = await pool.query(
+      `UPDATE reel_reports SET dismissed_at = now()
+        WHERE reel_id = $1 AND ${OPEN_REPORT}`,
+      [id]
+    );
+
+    return c.json({ success: true, cleared: cleared.rowCount, status: 'live' });
+  } catch (err) {
+    console.error('Failed to dismiss reports:', err);
+    return c.json({ error: 'Could not clear the reports' }, 500);
   }
 });
 
