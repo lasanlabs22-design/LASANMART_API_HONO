@@ -9,6 +9,7 @@ import {
   REPORT_REASONS,
   type ReportReason,
   AUTO_HIDE_AFTER,
+  OPEN_REPORT,
 } from '../lib/reelReports.js';
 import { sendReelReport } from '../email/report.js';
 import {
@@ -496,8 +497,10 @@ reelsRoute.post('/:id/report', rateLimit('reel-report', 20, HOUR), async (c) => 
       return c.json({ success: true });
     }
 
+    // Only reports the team hasn't already reviewed and dismissed
     const count = await pool.query(
-      'SELECT COUNT(*)::int AS n FROM reel_reports WHERE reel_id = $1',
+      `SELECT COUNT(*)::int AS n FROM reel_reports
+        WHERE reel_id = $1 AND ${OPEN_REPORT}`,
       [reelId]
     );
     const reportCount = count.rows[0].n;

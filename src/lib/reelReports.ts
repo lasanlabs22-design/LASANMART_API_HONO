@@ -15,6 +15,13 @@ export type ReportReason = (typeof REPORT_REASONS)[number];
 export const AUTO_HIDE_AFTER = 3;
 
 /**
+ * Reports the team hasn't cleared yet. A dismissed report is kept as
+ * history, and still stops that person reporting the reel again — so a
+ * reel the team called fine only comes back to review if NEW people flag it.
+ */
+export const OPEN_REPORT = 'dismissed_at IS NULL';
+
+/**
  * Migrations only run by hand, and production's database is only
  * reachable from Railway — so the table makes sure of itself the first
  * time it's needed. Mirrors the definition in schema.sql.
@@ -35,7 +42,9 @@ export function ensureReportsTable(): Promise<void> {
            UNIQUE (reel_id, reporter)
          );
          CREATE INDEX IF NOT EXISTS idx_reel_reports_reel
-           ON reel_reports(reel_id);`
+           ON reel_reports(reel_id);
+         ALTER TABLE reel_reports
+           ADD COLUMN IF NOT EXISTS dismissed_at TIMESTAMPTZ;`
       )
       .then(() => undefined)
       .catch((err) => {

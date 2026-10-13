@@ -303,6 +303,10 @@ CREATE TABLE IF NOT EXISTS reel_reports (
 
 CREATE INDEX IF NOT EXISTS idx_reel_reports_reel ON reel_reports(reel_id);
 
+-- Set when the team reviews a report and finds the reel fine. Kept,
+-- not deleted, so the same people can't re-flag it.
+ALTER TABLE reel_reports ADD COLUMN IF NOT EXISTS dismissed_at TIMESTAMPTZ;
+
 -- The queue of people waiting on an answer
 CREATE INDEX IF NOT EXISTS idx_contacts_vibes_pending
   ON contacts(vibes_requested_at DESC)
