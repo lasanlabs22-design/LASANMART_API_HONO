@@ -200,6 +200,11 @@ ALTER TABLE influencers ADD COLUMN IF NOT EXISTS skills JSONB;
 -- Vendors and freelancers price by rate card; influencers keep rate_per_post
 ALTER TABLE influencers ADD COLUMN IF NOT EXISTS rate_card TEXT;
 
+-- The Lasan Hub phone to push work and review news to. Also added on
+-- first use by src/lib/partnerNotify.ts.
+ALTER TABLE influencers ADD COLUMN IF NOT EXISTS push_token TEXT;
+ALTER TABLE influencers ADD COLUMN IF NOT EXISTS push_updated_at TIMESTAMPTZ;
+
 CREATE INDEX IF NOT EXISTS idx_partners_role ON influencers(role, status);
 
 -- A Lasan Mart request handed to a Lasan Hub vendor.

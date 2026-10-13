@@ -44,10 +44,18 @@ export async function sendPush(message: PushMessage): Promise<boolean> {
     if (status === 'error') {
       const error = result?.data?.details?.error;
 
+      // The token may belong to a Lasan Mart customer or a Lasan Hub
+      // partner — clear it wherever it is
       if (error === 'DeviceNotRegistered') {
         await pool
           .query(
             'UPDATE contacts SET push_token = NULL WHERE push_token = $1',
+            [message.to]
+          )
+          .catch(() => {});
+        await pool
+          .query(
+            'UPDATE influencers SET push_token = NULL WHERE push_token = $1',
             [message.to]
           )
           .catch(() => {});

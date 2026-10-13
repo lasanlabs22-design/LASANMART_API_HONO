@@ -3,6 +3,7 @@ import { pool } from '../db/pool.js';
 import { requirePhone } from '../middleware/requirePhone.js';
 import { rateLimit, HOUR } from '../lib/rateLimit.js';
 import { createNotification } from '../lib/notifications.js';
+import { ensurePartnerPushColumn } from '../lib/partnerNotify.js';
 
 export const influencersRoute = new Hono<{ Variables: { phone: string } }>();
 
@@ -445,6 +446,80 @@ influencersRoute.post('/notifications/read', requirePhone, async (c) => {
   } catch (err) {
     console.error('Failed to mark read:', err);
     return c.json({ error: 'Could not update' }, 500);
+  }
+});
+
+/**
+ * POST /influencers/push-token
+ * Body: { token }
+ * Lasan Hub registers this phone for pushes about work and reviews.
+ *
+ * The partner comes from the verified token, never the body — or
+ * anyone could send someone else's job offers to their own phone.
+ */
+influencersRoute.post('/push-token', requirePhone, rateLimit('partner-push-token', 30, HOUR), async (c) => {
+  const phone = c.get('phone');
+
+  let body: any;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: 'Body must be valid JSON' }, 400);
+  }
+
+  const token = String(body?.token || '').trim();
+
+  if (!token.startsWith('ExponentPushToken')) {
+    return c.json({ error: 'Invalid push token' }, 400);
+  }
+
+  try {
+    await ensurePartnerPushColumn();
+
+    // Phones get handed on — a token belongs to one partner at a time
+    await pool.query(
+      'UPDATE influencers SET push_token = NULL WHERE push_token = $1',
+      [token]
+    );
+
+    const result = await pool.query(
+      `UPDATE influencers
+          SET push_token = $1, push_updated_at = now()
+        WHERE phone = $2
+        RETURNING id`,
+      [token, phone]
+    );
+
+    if (result.rows.length === 0) {
+      // No profile yet. Not an error — the app tries again once they have one.
+      return c.json({ success: false, reason: 'no_profile' });
+    }
+
+    return c.json({ success: true });
+  } catch (err) {
+    console.error('Failed to save partner push token:', err);
+    return c.json({ error: 'Could not register for notifications' }, 500);
+  }
+});
+
+/**
+ * DELETE /influencers/push-token
+ * Called on sign-out, so this phone stops getting someone else's work.
+ */
+influencersRoute.delete('/push-token', requirePhone, async (c) => {
+  const phone = c.get('phone');
+
+  try {
+    await ensurePartnerPushColumn();
+    await pool.query(
+      `UPDATE influencers SET push_token = NULL, push_updated_at = now()
+        WHERE phone = $1`,
+      [phone]
+    );
+    return c.json({ success: true });
+  } catch (err) {
+    console.error('Failed to clear partner push token:', err);
+    return c.json({ error: 'Could not update notifications' }, 500);
   }
 });
 
