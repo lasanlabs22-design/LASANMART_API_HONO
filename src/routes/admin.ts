@@ -8,6 +8,7 @@ import { notifyPartner } from '../lib/partnerNotify.js';
 import { createNotification } from '../lib/notifications.js';
 import { pushToContact } from '../lib/push.js';
 import { ensureReportsTable } from '../lib/reelReports.js';
+import { signedUpload } from '../lib/uploadSignature.js';
 
 export const adminRoute = new Hono();
 
@@ -419,6 +420,16 @@ adminRoute.get('/reels', async (c) => {
     return c.json({ error: 'Could not load reels' }, 500);
   }
 });
+
+/**
+ * POST /admin/uploads/signature
+ * Signs one team reel upload from the console. Cloudinary's preset is
+ * signed-only, so the console can no longer upload anonymously; this
+ * keeps the secret here and the team's files in their own folder.
+ */
+adminRoute.post('/uploads/signature', (c) =>
+  c.json(signedUpload('team-reels'))
+);
 
 /**
  * POST /admin/reels

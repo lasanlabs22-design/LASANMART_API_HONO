@@ -1,28 +1,11 @@
 import crypto from 'crypto';
 import { Hono } from 'hono';
 import { pool } from '../db/pool.js';
-import { config } from '../config.js';
 import { requirePhone } from '../middleware/requirePhone.js';
 import { rateLimit, HOUR } from '../lib/rateLimit.js';
+import { signedUpload } from '../lib/uploadSignature.js';
 
 export const uploadsRoute = new Hono<{ Variables: { phone: string } }>();
-
-/**
- * Cloudinary signs a set of parameters with our API secret. The app
- * can then upload exactly those parameters — and nothing else — without
- * ever seeing the secret.
- */
-function sign(params: Record<string, string>) {
-  const toSign = Object.keys(params)
-    .sort()
-    .map((k) => `${k}=${params[k]}`)
-    .join('&');
-
-  return crypto
-    .createHash('sha1')
-    .update(toSign + config.cloudinary.apiSecret)
-    .digest('hex');
-}
 
 /**
  * POST /uploads/signature
@@ -73,15 +56,6 @@ uploadsRoute.post(
       return c.json({ error: 'Unknown upload kind' }, 400);
     }
 
-    const timestamp = String(Math.round(Date.now() / 1000));
-    const params = { folder, timestamp };
-
-    return c.json({
-      cloudName: config.cloudinary.cloudName,
-      apiKey: config.cloudinary.apiKey,
-      folder,
-      timestamp,
-      signature: sign(params),
-    });
+    return c.json(signedUpload(folder));
   }
 );
