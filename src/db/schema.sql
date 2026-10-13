@@ -288,6 +288,21 @@ ALTER TABLE contacts ADD COLUMN IF NOT EXISTS vibes_requested_at TIMESTAMPTZ;
 ALTER TABLE contacts ADD COLUMN IF NOT EXISTS vibes_reason TEXT;
 ALTER TABLE contacts ADD COLUMN IF NOT EXISTS vibes_decided_at TIMESTAMPTZ;
 
+-- Viewers flagging a Vibes reel. One row per person per reel; the
+-- reporter is "phone:<number>" when signed in, "ip:<address>" when not.
+-- Also created on first use by src/lib/reelReports.ts.
+CREATE TABLE IF NOT EXISTS reel_reports (
+  id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+  reel_id TEXT NOT NULL REFERENCES reels(id) ON DELETE CASCADE,
+  reporter TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  details TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (reel_id, reporter)
+);
+
+CREATE INDEX IF NOT EXISTS idx_reel_reports_reel ON reel_reports(reel_id);
+
 -- The queue of people waiting on an answer
 CREATE INDEX IF NOT EXISTS idx_contacts_vibes_pending
   ON contacts(vibes_requested_at DESC)
