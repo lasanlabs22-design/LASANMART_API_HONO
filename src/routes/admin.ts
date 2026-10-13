@@ -7,6 +7,7 @@ import { deleteContactData } from '../lib/contactDeletion.js';
 import { notifyPartner } from '../lib/partnerNotify.js';
 import { createNotification } from '../lib/notifications.js';
 import { pushToContact } from '../lib/push.js';
+import { ensureReportsTable } from '../lib/reelReports.js';
 
 export const adminRoute = new Hono();
 
@@ -387,11 +388,15 @@ adminRoute.get('/contacts', async (c) => {
  */
 adminRoute.get('/reels', async (c) => {
   try {
+    await ensureReportsTable();
+
     const result = await pool.query(
       `SELECT r.id, r.video_url, r.thumbnail_url, r.public_id,
               r.caption, r.username, r.source, r.status,
               r.duration, r.view_count, r.sort_order, r.created_at,
-              c.name AS contact_name, c.phone AS contact_phone
+              c.name AS contact_name, c.phone AS contact_phone,
+              (SELECT COUNT(*)::int FROM reel_reports rr
+                WHERE rr.reel_id = r.id) AS report_count
          FROM reels r
          LEFT JOIN contacts c ON c.id = r.contact_id
         ORDER BY r.sort_order DESC, r.created_at DESC
