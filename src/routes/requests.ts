@@ -10,6 +10,9 @@ export const requestsRoute = new Hono<{ Variables: { phone: string } }>();
 
 const VALID_TYPES = ['service', 'custom', 'plan', 'influencer'];
 
+/** An identical request this soon after the last is a resend, not a new lead */
+const DUPLICATE_WINDOW_MINUTES = 2;
+
 function isValidEmail(value: string): boolean {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
 }
@@ -76,6 +79,14 @@ requestsRoute.post('/', requirePhone, rateLimit('request', 20, HOUR), async (c) 
 
   try {
     await client.query('BEGIN');
+
+    // One submission per number at a time. A retry of the same request
+    // waits here until the first has committed, so the duplicate check
+    // below can see it — and two first requests can't both try to
+    // create the contact.
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [
+      `request:${phone}`,
+    ]);
 
     // Step 1: find or create the contact (person), matched by phone
     const existingContact = await client.query(
@@ -184,6 +195,46 @@ requestsRoute.post('/', requirePhone, rateLimit('request', 20, HOUR), async (c) 
       }
     }
 
+    // Step 1.75: the same request again within a couple of minutes is a
+    // resend, not a new lead. Android's HTTP stack silently retries a
+    // POST when the connection drops as the reply comes back — seen in
+    // production as two identical requests 4s apart. Answer with the
+    // one we already have, and don't email the team twice.
+    const resend = await client.query(
+      `SELECT id, created_at, email_sent
+         FROM requests
+        WHERE contact_id = $1
+          AND type = $2
+          AND title IS NOT DISTINCT FROM $3
+          AND description IS NOT DISTINCT FROM $4
+          AND details IS NOT DISTINCT FROM $5::jsonb
+          AND created_at > now() - interval '${DUPLICATE_WINDOW_MINUTES} minutes'
+        ORDER BY created_at DESC
+        LIMIT 1`,
+      [
+        contactId,
+        type,
+        body.title || null,
+        body.description || null,
+        body.details ? JSON.stringify(body.details) : null,
+      ]
+    );
+
+    if (resend.rows.length > 0) {
+      await client.query('COMMIT');
+      committed = true;
+
+      const existing = resend.rows[0];
+      return c.json({
+        success: true,
+        requestId: existing.id,
+        contactId,
+        emailSent: existing.email_sent,
+        createdAt: existing.created_at,
+        duplicate: true,
+      });
+    }
+
     // Step 2: create the request itself, linked to that contact
     const newRequest = await client.query(
       `INSERT INTO requests
@@ -212,42 +263,44 @@ requestsRoute.post('/', requirePhone, rateLimit('request', 20, HOUR), async (c) 
       await notifyFirstRequest(contactId, requestId);
     }
 
-    // Sent AFTER commit — if email fails, the lead is already safe
-    let emailSent = false;
-    try {
-      await sendRequestNotification({
-        requestId,
-        type,
-        name,
-        phone,
-        email,
-        companyName: body.companyName,
-        sector: body.sector,
-        city: body.city,
-        title: body.title,
-        description: body.description,
-        descriptionLabel: body.descriptionLabel,
-        details: body.details,
+    // Sent AFTER commit — if email fails, the lead is already safe. Not
+    // awaited: emailing took ~4s, and a slow reply is exactly when the
+    // phone's HTTP stack gives up and resends. email_sent records
+    // whether it went.
+    sendRequestNotification({
+      requestId,
+      type,
+      name,
+      phone,
+      email,
+      companyName: body.companyName,
+      sector: body.sector,
+      city: body.city,
+      title: body.title,
+      description: body.description,
+      descriptionLabel: body.descriptionLabel,
+      details: body.details,
+    })
+      .then(() =>
+        pool.query('UPDATE requests SET email_sent = true WHERE id = $1', [
+          requestId,
+        ])
+      )
+      .catch((emailErr) => {
+        // Deliberately not failing the request — the lead is in the database
+        console.error(
+          'Email notification failed (request still saved):',
+          emailErr
+        );
       });
-      emailSent = true;
-
-      await pool.query('UPDATE requests SET email_sent = true WHERE id = $1', [
-        requestId,
-      ]);
-    } catch (emailErr) {
-      console.error(
-        'Email notification failed (request still saved):',
-        emailErr
-      );
-      // Deliberately not failing the request — the lead is in the database
-    }
 
     return c.json(
       {
         success: true,
         requestId,
         contactId,
-        emailSent,
+        // Queued, not yet confirmed — the app doesn't rely on this
+        emailSent: false,
         createdAt: newRequest.rows[0].created_at,
       },
       201
