@@ -1037,8 +1037,20 @@ adminRoute.get('/requests/:id/assign', async (c) => {
     }
 
     const request = reqRow.rows[0];
-    const service =
-      request.details?.service || request.details?.services?.[0] || null;
+
+    /* Every service the customer asked for, not just the first — Mart
+       lists picks in its own menu order, so "first" would always skip
+       whatever sits later in the menu (Software Development, say). */
+    const wanted: string[] = request.details?.service
+      ? [String(request.details.service)]
+      : Array.isArray(request.details?.services)
+        ? request.details.services.filter(
+            (s: unknown): s is string => typeof s === 'string' && s !== ''
+          )
+        : [];
+
+    // Still one string for the panel's "Partners who do …" line
+    const service = wanted.length > 0 ? wanted.join(', ') : null;
 
     /* Which kind of partner can do this. An influencer request names
        people directly; everything else is matched on services or skills,
@@ -1048,8 +1060,10 @@ adminRoute.get('/requests/:id/assign', async (c) => {
         ? `i.role = 'influencer'`
         : `i.role IN ('vendor', 'freelancer')`;
 
-    // Approved vendors and freelancers, those who offer this exact
-    // service/skill first
+    // Approved vendors and freelancers, those who offer any of the
+    // requested services/skills first. ?| is "contains any of these";
+    // COALESCE keeps partners with no list from sorting to the top,
+    // since DESC puts NULLs first.
     const vendors = await pool.query(
       `SELECT i.id, i.name, i.phone, i.company_name, i.photo_url,
               i.services, i.skills, i.role, i.city, i.rate_card, i.gst_number,
@@ -1057,18 +1071,21 @@ adminRoute.get('/requests/:id/assign', async (c) => {
                 AS active_jobs,
               COUNT(f.id) FILTER (WHERE f.verdict = 'good')::int AS good_jobs,
               COUNT(f.id)::int AS rated_jobs,
-              CASE WHEN $1::text IS NULL THEN false
-                   WHEN i.role = 'vendor' THEN i.services @> to_jsonb(ARRAY[$1::text])
-                   WHEN i.role = 'freelancer' THEN i.skills @> to_jsonb(ARRAY[$1::text])
-                   ELSE i.category = $1::text
-              END AS offers_this
+              COALESCE(
+                CASE WHEN cardinality($1::text[]) = 0 THEN false
+                     WHEN i.role = 'vendor' THEN i.services ?| $1::text[]
+                     WHEN i.role = 'freelancer' THEN i.skills ?| $1::text[]
+                     ELSE i.category = ANY($1::text[])
+                END,
+                false
+              ) AS offers_this
          FROM influencers i
          LEFT JOIN request_assignments a ON a.partner_id = i.id
          LEFT JOIN assignment_feedback f ON f.partner_id = i.id
         WHERE i.status = 'approved' AND ${roleFilter}
         GROUP BY i.id
         ORDER BY offers_this DESC, good_jobs DESC, i.created_at DESC`,
-      [service]
+      [wanted]
     );
 
     const existing = await pool.query(
