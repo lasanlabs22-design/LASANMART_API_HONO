@@ -18,6 +18,27 @@ const VALID_REQUEST_TYPES = [
 const VALID_ROLES = ['influencer', 'vendor', 'freelancer'];
 
 /**
+ * A portfolio link as a partner typed it. Most leave off the https://
+ * ("behance.net/me"), so add it; refuse anything that isn't a web
+ * address (javascript:, data: …), since the console shows it as a link.
+ * null = none given, false = not a web link.
+ */
+function cleanPortfolioUrl(raw: unknown): string | null | false {
+  let url = raw ? String(raw).trim() : '';
+  if (!url) return null;
+
+  if (!/^[a-z][a-z0-9+.-]*:/i.test(url)) url = `https://${url}`;
+
+  try {
+    const parsed = new URL(url);
+    const isWeb = parsed.protocol === 'https:' || parsed.protocol === 'http:';
+    return isWeb && parsed.hostname.includes('.') ? url : false;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * GET /influencers/me
  * This partner's own profile, or null if they haven't made one.
  * The app checks this on launch to decide which screen to show.
@@ -103,6 +124,14 @@ influencersRoute.post('/', requirePhone, rateLimit('partner-profile', 20, HOUR),
     return c.json({ error: 'Rate must be a number' }, 400);
   }
 
+  const portfolio = cleanPortfolioUrl(body.portfolioUrl);
+  if (portfolio === false) {
+    return c.json(
+      { error: 'Portfolio link must be a web address, like behance.net/yourname' },
+      400
+    );
+  }
+
   try {
     const result = await pool.query(
       `INSERT INTO influencers
@@ -151,7 +180,7 @@ influencersRoute.post('/', requirePhone, rateLimit('partner-profile', 20, HOUR),
         body.gstNumber ? String(body.gstNumber).trim().toUpperCase() : null,
         Array.isArray(body.services) ? JSON.stringify(body.services) : null,
         body.otherService ? String(body.otherService).trim() : null,
-        body.portfolioUrl ? String(body.portfolioUrl).trim() : null,
+        portfolio,
         Array.isArray(body.skills) ? JSON.stringify(body.skills) : null,
         body.rateCard ? String(body.rateCard).trim().slice(0, 500) : null,
       ]
