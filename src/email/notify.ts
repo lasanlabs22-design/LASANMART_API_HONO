@@ -47,7 +47,32 @@ const TYPE_META: Record<
     dark: '#831843',
     emoji: '⭐',
   },
+  // Not request types of their own — 'custom' requests the app sends
+  // from the freelancer and tool screens, told apart by their details
+  freelancer: {
+    label: 'Freelancer Request',
+    accent: '#2563EB',
+    dark: '#1E3A8A',
+    emoji: '🎬',
+  },
+  tool: {
+    label: 'Tool Enquiry',
+    accent: '#0D9488',
+    dark: '#115E59',
+    emoji: '🧰',
+  },
 };
+
+/**
+ * The app sends freelancer requests and tool enquiries as 'custom', the
+ * same as a genuine custom requirement. Their details say which they
+ * are, so the email can say so too. Works for older app versions.
+ */
+function metaKeyFor(type: string, details?: Record<string, any> | null) {
+  if (type === 'custom' && details?.source === 'Freelancers') return 'freelancer';
+  if (type === 'custom' && details?.tool) return 'tool';
+  return type;
+}
 
 /** Make user-supplied text safe to place inside HTML */
 function esc(value: unknown): string {
@@ -93,8 +118,9 @@ function infoRow(label: string, value: string, accent: string) {
     </tr>`;
 }
 
-export async function sendRequestNotification(data: RequestNotification) {
-  const meta = TYPE_META[data.type] || {
+/** The subject and HTML for a request email — separate so it can be previewed */
+export function buildRequestEmail(data: RequestNotification) {
+  const meta = TYPE_META[metaKeyFor(data.type, data.details)] || {
     label: data.type,
     accent: '#FF6B35',
     dark: '#C2410C',
@@ -307,11 +333,21 @@ export async function sendRequestNotification(data: RequestNotification) {
 </body>
 </html>`;
 
+  // What was asked for leads the subject, so the inbox reads at a glance
+  // ("📣 Social Media — Aaron (98…)"); the type is still in the header
+  const subject = `${meta.emoji} ${data.title || meta.label} — ${data.name} (${data.phone})`;
+
+  return { subject, html };
+}
+
+export async function sendRequestNotification(data: RequestNotification) {
+  const { subject, html } = buildRequestEmail(data);
+
   const result = await resend.emails.send({
     from: config.resend.from,
     to: config.resend.to,
     replyTo: data.email || undefined,
-    subject: `${meta.emoji} ${meta.label} — ${data.name} (${data.phone})`,
+    subject,
     html,
   });
 
