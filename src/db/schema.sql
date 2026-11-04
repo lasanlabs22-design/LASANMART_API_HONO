@@ -36,6 +36,10 @@ ALTER TABLE requests ADD COLUMN IF NOT EXISTS internal_note TEXT;
 -- Track when the team last touched it
 ALTER TABLE requests ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now();
 
+-- The question the description answers, when the app asked a specific
+-- one (also ensured at runtime — see lib/requestColumns.ts)
+ALTER TABLE requests ADD COLUMN IF NOT EXISTS description_label TEXT;
+
 -- Useful indexes for the dashboard's most common queries
 CREATE INDEX IF NOT EXISTS idx_requests_created_at ON requests(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_requests_status ON requests(status);

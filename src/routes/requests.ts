@@ -5,6 +5,7 @@ import { notifyFirstRequest } from '../lib/notifications.js';
 import { requirePhone } from '../middleware/requirePhone.js';
 import { isAllowedPhotoUrl } from '../lib/media.js';
 import { rateLimit, HOUR } from '../lib/rateLimit.js';
+import { ensureRequestColumns } from '../lib/requestColumns.js';
 
 export const requestsRoute = new Hono<{ Variables: { phone: string } }>();
 
@@ -73,6 +74,19 @@ requestsRoute.post('/', requirePhone, rateLimit('request', 20, HOUR), async (c) 
   }
 
   /* ---------- Save ---------- */
+
+  // Keeping the question is a nice-to-have: if the column can't be
+  // made, the request still saves, just without it
+  const descriptionLabel = body.descriptionLabel
+    ? String(body.descriptionLabel).trim().slice(0, 200) || null
+    : null;
+  const canStoreLabel = await ensureRequestColumns().then(
+    () => true,
+    (err) => {
+      console.error('Could not ensure request columns:', err);
+      return false;
+    }
+  );
 
   const client = await pool.connect();
   let committed = false;
@@ -236,19 +250,29 @@ requestsRoute.post('/', requirePhone, rateLimit('request', 20, HOUR), async (c) 
     }
 
     // Step 2: create the request itself, linked to that contact
-    const newRequest = await client.query(
-      `INSERT INTO requests
-        (contact_id, type, title, description, details, status, email_sent)
-       VALUES ($1, $2, $3, $4, $5, 'new', false)
-       RETURNING id, created_at`,
-      [
-        contactId,
-        type,
-        body.title || null,
-        body.description || null,
-        body.details ? JSON.stringify(body.details) : null,
-      ]
-    );
+    const values = [
+      contactId,
+      type,
+      body.title || null,
+      body.description || null,
+      body.details ? JSON.stringify(body.details) : null,
+    ];
+    const newRequest = canStoreLabel
+      ? await client.query(
+          `INSERT INTO requests
+            (contact_id, type, title, description, details, status, email_sent,
+             description_label)
+           VALUES ($1, $2, $3, $4, $5, 'new', false, $6)
+           RETURNING id, created_at`,
+          [...values, descriptionLabel]
+        )
+      : await client.query(
+          `INSERT INTO requests
+            (contact_id, type, title, description, details, status, email_sent)
+           VALUES ($1, $2, $3, $4, $5, 'new', false)
+           RETURNING id, created_at`,
+          values
+        );
 
     await client.query('COMMIT');
     committed = true;
