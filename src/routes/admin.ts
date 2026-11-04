@@ -130,8 +130,10 @@ adminRoute.get('/requests', async (c) => {
   if (q) {
     params.push(`%${q}%`);
     const i = params.length;
+    // The description too: service requests are titled with just the
+    // service now, so what the customer wrote lives there
     conditions.push(
-      `(c.name ILIKE $${i} OR c.phone ILIKE $${i} OR c.email ILIKE $${i} OR r.title ILIKE $${i})`
+      `(c.name ILIKE $${i} OR c.phone ILIKE $${i} OR c.email ILIKE $${i} OR r.title ILIKE $${i} OR r.description ILIKE $${i})`
     );
   }
 
@@ -198,6 +200,9 @@ adminRoute.get('/requests/:id', async (c) => {
           r.id, r.type, r.title, r.description, r.details,
           r.status, r.assigned_to, r.assigned_at, r.internal_note,
           r.email_sent, r.created_at, r.updated_at,
+          -- Read through to_jsonb so this still works before the
+          -- column exists (it's added on the first new request)
+          to_jsonb(r)->>'description_label' AS description_label,
           c.id AS contact_id, c.name, c.phone, c.email,
           c.company_name, c.company_description, c.sector, c.city,
           c.created_at AS contact_since,
