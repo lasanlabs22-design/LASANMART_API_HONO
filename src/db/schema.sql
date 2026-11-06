@@ -320,3 +320,35 @@ ALTER TABLE reel_reports ADD COLUMN IF NOT EXISTS dismissed_at TIMESTAMPTZ;
 CREATE INDEX IF NOT EXISTS idx_contacts_vibes_pending
   ON contacts(vibes_requested_at DESC)
   WHERE vibes_requested_at IS NOT NULL AND can_post_vibes = false;
+
+-- Hoardings the team lists from the console; the app shows the live
+-- ones under Offline Marketing → Hoardings. Photos is a list of our own
+-- Cloudinary image URLs. Also created on first use by src/lib/hoardings.ts.
+CREATE TABLE IF NOT EXISTS hoardings (
+  id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+  title TEXT NOT NULL,
+  media_type TEXT NOT NULL DEFAULT 'Billboard',
+  city TEXT NOT NULL,
+  area TEXT NOT NULL,
+  address TEXT,
+  latitude DOUBLE PRECISION,
+  longitude DOUBLE PRECISION,
+  width_ft NUMERIC,
+  height_ft NUMERIC,
+  illumination TEXT,
+  facing TEXT,
+  traffic TEXT,
+  price_per_month INTEGER,
+  min_months INTEGER,
+  availability TEXT NOT NULL DEFAULT 'available',  -- available | booked
+  available_from DATE,
+  photos JSONB NOT NULL DEFAULT '[]'::jsonb,
+  description TEXT,
+  status TEXT NOT NULL DEFAULT 'live',              -- live | hidden
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_hoardings_live_city
+  ON hoardings(city, area) WHERE status = 'live';
