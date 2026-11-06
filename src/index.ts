@@ -10,6 +10,7 @@ import { adminRoute } from './routes/admin.js';
 import { influencersRoute } from './routes/influencers.js';
 import { uploadsRoute } from './routes/uploads.js';
 import { accountRoute } from './routes/account.js';
+import { hoardingsRoute, adminHoardingsRoute } from './routes/hoardings.js';
 
 const app = new Hono();
 
@@ -62,8 +63,11 @@ app.route('/reels', reelsRoute);
 app.route('/influencers', influencersRoute);
 app.route('/uploads', uploadsRoute);
 app.route('/account', accountRoute);
+app.route('/hoardings', hoardingsRoute);
 
 /* ---------- Team-facing (used by the admin console) ---------- */
+// Before /admin, so its own admin-key check handles these paths
+app.route('/admin/hoardings', adminHoardingsRoute);
 app.route('/admin', adminRoute);
 
 serve({ fetch: app.fetch, port: config.port }, (info) => {
